@@ -110,7 +110,8 @@ function toProject(repo: Doc<"repos">, interaction: Doc<"ratings"> | null) {
     archived: repo.archived,
     firstSeenAt: repo.firstSeenAt,
     discoveredVia: repo.discoveredVia,
-    readme: repo.readme ?? null,
+    // The README text is large, so it is fetched per card instead of being
+    // shipped with every list. `readmeLoaded` says whether to bother.
     readmeLoaded: repo.readmeFetchedAt !== undefined,
     images: repo.images ?? [],
     rating: interaction?.value ?? null,
@@ -300,6 +301,25 @@ export const projects = query({
     );
 
     return { items: items.filter((item) => item !== null) };
+  },
+});
+
+/**
+ * The README for one project, fetched only by cards near the viewport. This
+ * keeps the feed payload small no matter how far the user has scrolled.
+ */
+export const readme = query({
+  args: { repoId: v.number() },
+  handler: async (ctx, { repoId }) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) return null;
+    const repo = await findRepo(ctx, repoId);
+    if (!repo) return null;
+    return {
+      readme: repo.readme ?? null,
+      readmeLoaded: repo.readmeFetchedAt !== undefined,
+      images: repo.images ?? [],
+    };
   },
 });
 

@@ -179,17 +179,36 @@ function renderBlock(block: Block, index: number): React.ReactNode {
   }
 }
 
+/** Characters kept when a long paragraph is trimmed for a preview. */
+const PREVIEW_CHARS = 420;
+
 /** Renders a README as React elements — never as raw HTML. */
 export function Markdown({
   source,
   title,
   className,
+  maxBlocks,
 }: {
   source: string;
   title?: string;
   className?: string;
+  /** Show only the opening of the README (keeps long feeds light). */
+  maxBlocks?: number;
 }) {
-  const blocks = useMemo(() => parseMarkdown(source, title), [source, title]);
+  const blocks = useMemo(() => {
+    const parsed = parseMarkdown(source, title);
+    if (!maxBlocks || parsed.length <= maxBlocks) return parsed;
+
+    const head = parsed.slice(0, maxBlocks);
+    const last = head[head.length - 1];
+    if (last.kind === "paragraph" && last.text.length > PREVIEW_CHARS) {
+      head[head.length - 1] = {
+        ...last,
+        text: `${last.text.slice(0, PREVIEW_CHARS).trimEnd()}…`,
+      };
+    }
+    return head;
+  }, [source, title, maxBlocks]);
 
   return (
     <div

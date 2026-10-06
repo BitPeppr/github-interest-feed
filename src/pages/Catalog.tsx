@@ -30,7 +30,7 @@ const SORTS: Record<SortKey, string> = {
 };
 
 /** Rendering every cached project at once gets heavy; ask people to narrow down. */
-const VISIBLE_LIMIT = 120;
+const VISIBLE_LIMIT = 60;
 
 export default function Catalog() {
   const data = useQuery(api.feed.catalog);

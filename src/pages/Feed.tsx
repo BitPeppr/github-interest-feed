@@ -14,13 +14,16 @@ import { api } from "@/convex/_generated/api";
 import { useRatings } from "@/hooks/use-ratings";
 import { errorText } from "@/lib/format";
 
-/** Cards kept in memory at once; far more than one sitting needs. */
-const MAX_QUEUE = 150;
+/** Cards mounted at once. Plenty for a sitting, and keeps the DOM small. */
+const MAX_QUEUE = 80;
 /** Refill discovery once fewer than this many unseen projects remain. */
 const LOW_POOL = 12;
 /** Wait before asking GitHub again after a failed attempt. */
-const REFILL_COOLDOWN_MS = 15_000;
+const REFILL_COOLDOWN_MS = 20_000;
 const README_BATCH = 6;
+/** Seen markers are sent in batches: fewer queries, no scroll jank. */
+const SEEN_BATCH = 8;
+const SEEN_INTERVAL_MS = 1200;
 
 export default function Feed() {
   const discovery = useQuery(api.feed.discovery);
@@ -29,6 +32,7 @@ export default function Feed() {
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
 
+  const idsRef = useRef<number[]>([]);
   const queued = useRef(new Set<number>());
   const seen = useRef(new Set<number>());
   const pendingSeen = useRef(new Set<number>());
@@ -40,6 +44,10 @@ export default function Feed() {
   const enriching = useRef(new Set<number>());
   const enrichQueue = useRef<number[]>([]);
   const enrichTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    idsRef.current = ids;
+  }, [ids]);
 
   const projects = useQuery(
     api.feed.projects,
@@ -60,6 +68,7 @@ export default function Feed() {
       (id) => !queued.current.has(id) && !dismissed.has(id),
     );
     if (fresh.length === 0) return;
+
     setIds((previous) => {
       const room = MAX_QUEUE - previous.length;
       if (room <= 0) return previous;
@@ -69,7 +78,7 @@ export default function Feed() {
     });
   }, [discovery, dismissed]);
 
-  /* --- reading READMEs, on demand, as cards come into view ------------- */
+  /* --- reading READMEs, in batches, only for cards coming into view ---- */
 
   const queueEnrich = useCallback(
     (repoId: number) => {
@@ -97,6 +106,16 @@ export default function Feed() {
 
   /* --- tell the backend which projects have scrolled past -------------- */
 
+  const flushSeen = useCallback(() => {
+    seenTimer.current = null;
+    const batch = [...pendingSeen.current];
+    pendingSeen.current.clear();
+    if (batch.length === 0) return;
+    void markSeen({ repoIds: batch }).catch(() => {
+      // Seen markers are best effort; the feed refills anyway.
+    });
+  }, [markSeen]);
+
   const handleSeen = useCallback(
     (repoId: number) => {
       if (seen.current.has(repoId)) return;
@@ -104,18 +123,15 @@ export default function Feed() {
       pendingSeen.current.add(repoId);
       queueEnrich(repoId);
 
-      if (seenTimer.current) return;
-      seenTimer.current = setTimeout(() => {
-        seenTimer.current = null;
-        const batch = [...pendingSeen.current];
-        pendingSeen.current.clear();
-        if (batch.length === 0) return;
-        void markSeen({ repoIds: batch }).catch(() => {
-          // Seen markers are best effort; the feed refills anyway.
-        });
-      }, 400);
+      if (pendingSeen.current.size >= SEEN_BATCH) {
+        flushSeen();
+        return;
+      }
+      if (!seenTimer.current) {
+        seenTimer.current = setTimeout(flushSeen, SEEN_INTERVAL_MS);
+      }
     },
-    [markSeen, queueEnrich],
+    [flushSeen, queueEnrich],
   );
 
   useEffect(
@@ -159,13 +175,13 @@ export default function Feed() {
       (entries) => {
         if (entries.some((entry) => entry.isIntersecting)) void loadMore();
       },
-      { rootMargin: "500px" },
+      { rootMargin: "600px" },
     );
     observer.observe(node);
     return () => observer.disconnect();
   }, [loadMore]);
 
-  /* --- interactions ---------------------------------------------------- */
+  /* --- interactions (all stable, so cards can stay memoised) ---------- */
 
   const handleToggleSaved = useCallback(
     (repoId: number, saved: boolean) => {
@@ -201,6 +217,24 @@ export default function Feed() {
     [setHidden],
   );
 
+  const goTo = useCallback(
+    (index: number) => {
+      const targetId = idsRef.current[index];
+      const node = targetId ? nodes.current.get(targetId) : undefined;
+      if (node) node.scrollIntoView({ behavior: "smooth", block: "start" });
+      else void loadMore();
+    },
+    [loadMore],
+  );
+
+  const registerNode = useCallback(
+    (repoId: number, node: HTMLElement | null) => {
+      if (node) nodes.current.set(repoId, node);
+      else nodes.current.delete(repoId);
+    },
+    [],
+  );
+
   const cards = useMemo(() => {
     const byId = new Map(
       (projects?.items ?? []).map((item) => [item.repoId, item]),
@@ -210,21 +244,6 @@ export default function Feed() {
       .map((id) => byId.get(id))
       .filter((item): item is Project => item !== undefined);
   }, [projects, ids, dismissed]);
-
-  const scrollToIndex = useCallback(
-    (index: number) => {
-      const targetId = ids[index];
-      const node = targetId ? nodes.current.get(targetId) : undefined;
-      if (node) node.scrollIntoView({ behavior: "smooth", block: "start" });
-      else void loadMore();
-    },
-    [ids, loadMore],
-  );
-
-  const registerNode = useCallback((repoId: number, node: HTMLElement | null) => {
-    if (node) nodes.current.set(repoId, node);
-    else nodes.current.delete(repoId);
-  }, []);
 
   const ratedCount = discovery?.rated ?? 0;
   const catalogSize = discovery?.catalogSize ?? 0;
@@ -236,7 +255,7 @@ export default function Feed() {
       <motion.main
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
-        transition={{ duration: 0.3, ease: "easeOut" }}
+        transition={{ duration: 0.25, ease: "easeOut" }}
         className="mx-auto w-full max-w-2xl px-6 py-8 lg:py-10"
       >
         <div className="flex flex-wrap items-end justify-between gap-4">
@@ -245,8 +264,8 @@ export default function Feed() {
               Your feed
             </h1>
             <p className="mt-1.5 text-sm text-muted-foreground">
-              Projects picked for you from across GitHub. Rate what interests
-              you, save what you want to keep.
+              Projects picked from across GitHub. Rate what interests you, save
+              what you want to keep.
             </p>
           </div>
           <p className="text-xs text-muted-foreground tabular-nums">
@@ -304,20 +323,18 @@ export default function Feed() {
         ) : (
           <div className="mt-8 space-y-6">
             {cards.map((project, index) => (
-              <div
+              <ProjectCard
                 key={project.repoId}
-                ref={(node) => registerNode(project.repoId, node)}
-              >
-                <ProjectCard
-                  project={project}
-                  onRate={rate}
-                  onClear={clear}
-                  onToggleSaved={handleToggleSaved}
-                  onHide={handleHide}
-                  onNext={() => scrollToIndex(index + 1)}
-                  onSeen={handleSeen}
-                />
-              </div>
+                project={project}
+                index={index}
+                onRate={rate}
+                onClear={clear}
+                onToggleSaved={handleToggleSaved}
+                onHide={handleHide}
+                onSeen={handleSeen}
+                onGoTo={goTo}
+                registerNode={registerNode}
+              />
             ))}
           </div>
         )}
