@@ -11,39 +11,37 @@ import type { Project } from "@/components/feed/types";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { api } from "@/convex/_generated/api";
-import { useRatings } from "@/hooks/use-ratings";
 import { errorText } from "@/lib/format";
 
-/** Cards mounted at once. Plenty for a sitting, and keeps the DOM small. */
-const MAX_QUEUE = 80;
-/** Refill discovery once fewer than this many unseen projects remain. */
+const MAX_QUEUE = 24;
 const LOW_POOL = 12;
-/** Wait before asking GitHub again after a failed attempt. */
 const REFILL_COOLDOWN_MS = 20_000;
-const README_BATCH = 6;
-/** Seen markers are sent in batches: fewer queries, no scroll jank. */
 const SEEN_BATCH = 8;
 const SEEN_INTERVAL_MS = 1200;
 
 export default function Feed() {
   const discovery = useQuery(api.feed.discovery);
   const [ids, setIds] = useState<number[]>([]);
-  const [dismissed, setDismissed] = useState<Set<number>>(new Set());
+  const [dismissed, setDismissed] = useState<Set<number>>(() => new Set());
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
+  const [pendingRatings, setPendingRatings] = useState<Map<number, number | null>>(
+    () => new Map(),
+  );
+  const [pendingSaved, setPendingSaved] = useState<Map<number, boolean>>(
+    () => new Map(),
+  );
 
   const idsRef = useRef<number[]>([]);
   const queued = useRef(new Set<number>());
   const seen = useRef(new Set<number>());
+  const passed = useRef(new Set<number>());
   const pendingSeen = useRef(new Set<number>());
   const seenTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const nodes = useRef(new Map<number, HTMLElement>());
   const sentinel = useRef<HTMLDivElement | null>(null);
   const fetching = useRef(false);
   const lastAttempt = useRef(0);
-  const enriching = useRef(new Set<number>());
-  const enrichQueue = useRef<number[]>([]);
-  const enrichTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     idsRef.current = ids;
@@ -56,11 +54,9 @@ export default function Feed() {
   const markSeen = useMutation(api.feed.markSeen);
   const setSaved = useMutation(api.feed.setSaved);
   const setHidden = useMutation(api.feed.setHidden);
+  const setRating = useMutation(api.feed.setRating);
+  const clearRating = useMutation(api.feed.clearRating);
   const fetchMore = useAction(api.github.fetchMore);
-  const enrich = useAction(api.github.enrich);
-  const { rate, clear } = useRatings();
-
-  /* --- hold the window of projects in a local, append-only queue ------- */
 
   useEffect(() => {
     if (!discovery) return;
@@ -68,52 +64,18 @@ export default function Feed() {
       (id) => !queued.current.has(id) && !dismissed.has(id),
     );
     if (fresh.length === 0) return;
-
     setIds((previous) => {
-      const room = MAX_QUEUE - previous.length;
-      if (room <= 0) return previous;
-      const added = fresh.slice(0, room);
+      const added = fresh.slice(0, Math.max(0, MAX_QUEUE - previous.length));
       added.forEach((id) => queued.current.add(id));
-      return [...previous, ...added];
+      return added.length ? [...previous, ...added] : previous;
     });
   }, [discovery, dismissed]);
-
-  /* --- reading READMEs, in batches, only for cards coming into view ---- */
-
-  const queueEnrich = useCallback(
-    (repoId: number) => {
-      if (enriching.current.has(repoId)) return;
-      enriching.current.add(repoId);
-      enrichQueue.current.push(repoId);
-
-      const flush = () => {
-        enrichTimer.current = null;
-        const batch = enrichQueue.current.splice(0, README_BATCH);
-        if (batch.length > 0) {
-          void enrich({ repoIds: batch }).catch(() => {
-            // A README that will not load is not worth interrupting the feed.
-          });
-        }
-        if (enrichQueue.current.length > 0) {
-          enrichTimer.current = setTimeout(flush, 250);
-        }
-      };
-
-      if (!enrichTimer.current) enrichTimer.current = setTimeout(flush, 350);
-    },
-    [enrich],
-  );
-
-  /* --- tell the backend which projects have scrolled past -------------- */
 
   const flushSeen = useCallback(() => {
     seenTimer.current = null;
     const batch = [...pendingSeen.current];
     pendingSeen.current.clear();
-    if (batch.length === 0) return;
-    void markSeen({ repoIds: batch }).catch(() => {
-      // Seen markers are best effort; the feed refills anyway.
-    });
+    if (batch.length > 0) void markSeen({ repoIds: batch }).catch(() => {});
   }, [markSeen]);
 
   const handleSeen = useCallback(
@@ -121,28 +83,23 @@ export default function Feed() {
       if (seen.current.has(repoId)) return;
       seen.current.add(repoId);
       pendingSeen.current.add(repoId);
-      queueEnrich(repoId);
-
-      if (pendingSeen.current.size >= SEEN_BATCH) {
-        flushSeen();
-        return;
-      }
-      if (!seenTimer.current) {
+      if (pendingSeen.current.size >= SEEN_BATCH) flushSeen();
+      else if (!seenTimer.current) {
         seenTimer.current = setTimeout(flushSeen, SEEN_INTERVAL_MS);
       }
     },
-    [flushSeen, queueEnrich],
+    [flushSeen],
   );
 
   useEffect(
     () => () => {
       if (seenTimer.current) clearTimeout(seenTimer.current);
-      if (enrichTimer.current) clearTimeout(enrichTimer.current);
+      const batch = [...pendingSeen.current];
+      pendingSeen.current.clear();
+      if (batch.length > 0) void markSeen({ repoIds: batch }).catch(() => {});
     },
-    [],
+    [markSeen],
   );
-
-  /* --- keep the feed full --------------------------------------------- */
 
   const loadMore = useCallback(async () => {
     if (fetching.current) return;
@@ -162,8 +119,7 @@ export default function Feed() {
 
   useEffect(() => {
     if (!discovery || ids.length >= MAX_QUEUE) return;
-    if (discovery.remaining >= LOW_POOL) return;
-    if (fetching.current) return;
+    if (discovery.remaining >= LOW_POOL || fetching.current) return;
     if (Date.now() - lastAttempt.current < REFILL_COOLDOWN_MS) return;
     void loadMore();
   }, [discovery, ids.length, loadMore]);
@@ -181,35 +137,65 @@ export default function Feed() {
     return () => observer.disconnect();
   }, [loadMore]);
 
-  /* --- interactions (all stable, so cards can stay memoised) ---------- */
-
+  const handleRate = useCallback(
+    (repoId: number, value: number) => {
+      setPendingRatings((current) => new Map(current).set(repoId, value));
+      void setRating({ repoId, value }).catch((error) => {
+        setPendingRatings((current) => {
+          const next = new Map(current);
+          next.delete(repoId);
+          return next;
+        });
+        toast.error(errorText(error));
+      });
+    },
+    [setRating],
+  );
+  const handleClear = useCallback(
+    (repoId: number) => {
+      setPendingRatings((current) => new Map(current).set(repoId, null));
+      void clearRating({ repoId }).catch((error) => {
+        setPendingRatings((current) => {
+          const next = new Map(current);
+          next.delete(repoId);
+          return next;
+        });
+        toast.error(errorText(error));
+      });
+    },
+    [clearRating],
+  );
   const handleToggleSaved = useCallback(
     (repoId: number, saved: boolean) => {
-      void setSaved({ repoId, saved }).catch((error) =>
-        toast.error(errorText(error)),
-      );
+      setPendingSaved((current) => new Map(current).set(repoId, saved));
+      void setSaved({ repoId, saved }).catch((error) => {
+        setPendingSaved((current) => {
+          const next = new Map(current);
+          next.delete(repoId);
+          return next;
+        });
+        toast.error(errorText(error));
+      });
     },
     [setSaved],
   );
 
   const handleHide = useCallback(
     (repoId: number) => {
-      setDismissed((previous) => new Set(previous).add(repoId));
+      setDismissed((current) => new Set(current).add(repoId));
       void setHidden({ repoId, hidden: true }).catch((error) =>
         toast.error(errorText(error)),
       );
-      toast("Hidden — it will not come back to your feed.", {
+      toast("Skipped.", {
         action: {
           label: "Undo",
           onClick: () => {
-            setDismissed((previous) => {
-              const next = new Set(previous);
+            setDismissed((current) => {
+              const next = new Set(current);
               next.delete(repoId);
               return next;
             });
-            void setHidden({ repoId, hidden: false }).catch(() => {
-              // If undo fails the project simply stays hidden.
-            });
+            void setHidden({ repoId, hidden: false }).catch(() => {});
           },
         },
       });
@@ -217,16 +203,23 @@ export default function Feed() {
     [setHidden],
   );
 
+  const handlePassed = useCallback((repoId: number) => {
+    if (passed.current.has(repoId)) return;
+    passed.current.add(repoId);
+    setIds((current) => {
+      if (current.length <= LOW_POOL) return current;
+      return current.filter((id) => id !== repoId);
+    });
+  }, []);
+
   const goTo = useCallback(
     (index: number) => {
-      const targetId = idsRef.current[index];
-      const node = targetId ? nodes.current.get(targetId) : undefined;
+      const node = nodes.current.get(idsRef.current[index]);
       if (node) node.scrollIntoView({ behavior: "smooth", block: "start" });
       else void loadMore();
     },
     [loadMore],
   );
-
   const registerNode = useCallback(
     (repoId: number, node: HTMLElement | null) => {
       if (node) nodes.current.set(repoId, node);
@@ -236,117 +229,77 @@ export default function Feed() {
   );
 
   const cards = useMemo(() => {
-    const byId = new Map(
-      (projects?.items ?? []).map((item) => [item.repoId, item]),
-    );
+    const byId = new Map((projects?.items ?? []).map((item) => [item.repoId, item]));
     return ids
       .filter((id) => !dismissed.has(id))
       .map((id) => byId.get(id))
       .filter((item): item is Project => item !== undefined);
   }, [projects, ids, dismissed]);
 
-  const ratedCount = discovery?.rated ?? 0;
-  const catalogSize = discovery?.catalogSize ?? 0;
-
   return (
     <div className="min-h-screen bg-background text-foreground">
       <AppHeader active="feed" />
-
       <motion.main
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
-        transition={{ duration: 0.25, ease: "easeOut" }}
-        className="mx-auto w-full max-w-2xl px-6 py-8 lg:py-10"
+        transition={{ duration: 0.12, ease: "easeOut" }}
+        className="mx-auto w-full max-w-2xl px-4 py-6 sm:px-6 lg:py-8"
       >
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-semibold tracking-[-0.02em]">
-              Your feed
-            </h1>
-            <p className="mt-1.5 text-sm text-muted-foreground">
-              Projects picked from across GitHub. Rate what interests you, save
-              what you want to keep.
-            </p>
+            <h1 className="text-2xl font-semibold tracking-[-0.02em]">Feed</h1>
+            <p className="mt-1 text-sm text-muted-foreground">Rate projects. Save the good ones.</p>
           </div>
           <p className="text-xs text-muted-foreground tabular-nums">
-            {ratedCount} rated · {catalogSize} in your catalog
+            {discovery?.rated ?? 0} rated · {discovery?.catalogSize ?? 0} projects
           </p>
         </div>
 
         {problem && (
-          <div className="mt-6 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-dashed border-border px-4 py-3">
-            <p className="text-xs leading-relaxed text-muted-foreground">
-              {problem}
-            </p>
-            <Button
-              variant="outline"
-              size="sm"
-              className="gap-1.5"
-              onClick={() => {
-                lastAttempt.current = 0;
-                void loadMore();
-              }}
-            >
-              <RefreshCw className="size-3.5" />
-              Try again
+          <div className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border px-4 py-3">
+            <p className="text-xs text-muted-foreground">{problem}</p>
+            <Button variant="outline" size="sm" onClick={() => void loadMore()}>
+              <RefreshCw className="mr-2 size-3.5" /> Try again
             </Button>
           </div>
         )}
 
         {discovery === undefined || (ids.length > 0 && projects === undefined) ? (
-          <Loading label="Opening your feed…" />
+          <Loading label="Loading projects…" />
         ) : cards.length === 0 ? (
-          <div className="mt-8 flex flex-col items-center gap-3 rounded-xl border border-border px-6 py-16 text-center">
-            <Spinner className="size-4 text-muted-foreground" />
-            <p className="text-sm font-medium">
-              {isLoadingMore
-                ? "Looking for something you have not seen yet…"
-                : "Nothing new right now"}
-            </p>
-            <p className="max-w-sm text-xs leading-relaxed text-muted-foreground">
-              {isLoadingMore
-                ? "GitHub is handing over the next batch."
-                : "Fetch the next batch of projects, or follow a topic on your dashboard to steer what turns up."}
-            </p>
+          <div className="mt-8 flex flex-col items-center gap-3 rounded-xl border border-border px-6 py-12 text-center">
+            {isLoadingMore && <Spinner className="size-4 text-muted-foreground" />}
+            <p className="text-sm font-medium">{isLoadingMore ? "Finding projects…" : "No projects yet"}</p>
             {!isLoadingMore && (
-              <Button
-                className="mt-2"
-                onClick={() => {
-                  lastAttempt.current = 0;
-                  void loadMore();
-                }}
-              >
-                Fetch more projects
-              </Button>
+              <Button onClick={() => void loadMore()}>Load projects</Button>
             )}
           </div>
         ) : (
-          <div className="mt-8 space-y-6">
+          <div className="mt-6 space-y-4">
             {cards.map((project, index) => (
               <ProjectCard
                 key={project.repoId}
-                project={project}
+                project={{
+                  ...project,
+                  rating: pendingRatings.has(project.repoId)
+                    ? pendingRatings.get(project.repoId) ?? null
+                    : project.rating,
+                  saved: pendingSaved.get(project.repoId) ?? project.saved,
+                }}
                 index={index}
-                onRate={rate}
-                onClear={clear}
+                onRate={handleRate}
+                onClear={handleClear}
                 onToggleSaved={handleToggleSaved}
                 onHide={handleHide}
                 onSeen={handleSeen}
+                onPassed={handlePassed}
                 onGoTo={goTo}
                 registerNode={registerNode}
               />
             ))}
           </div>
         )}
-
         <div ref={sentinel} className="h-px" />
-
-        {cards.length > 0 && isLoadingMore && (
-          <div className="flex items-center justify-center gap-2 py-8 text-xs text-muted-foreground">
-            <Spinner className="size-3.5" />
-            Fetching more projects…
-          </div>
-        )}
       </motion.main>
     </div>
   );

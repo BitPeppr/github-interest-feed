@@ -73,6 +73,13 @@ class RootErrorBoundary extends React.Component<
                 {this.state.stack}
               </pre>
             )}
+            <button
+              type="button"
+              onClick={() => window.location.reload()}
+              className="mt-4 rounded-md border border-border px-3 py-2 text-sm hover:bg-accent"
+            >
+              Reload app
+            </button>
           </div>
         </div>
       );
@@ -83,7 +90,14 @@ class RootErrorBoundary extends React.Component<
 
 const convex = new ConvexReactClient(import.meta.env.VITE_CONVEX_URL as string);
 
-
+function RouteErrorBoundary({ children }: { children: React.ReactNode }) {
+  const location = useLocation();
+  return (
+    <RootErrorBoundary key={location.pathname}>
+      {children}
+    </RootErrorBoundary>
+  );
+}
 
 function RouteSyncer() {
   const location = useLocation();
@@ -118,8 +132,9 @@ createRoot(document.getElementById("root")!).render(
       <ConvexAuthProvider client={convex}>
         <BrowserRouter>
           <RouteSyncer />
-          <Suspense fallback={<RouteLoading />}>
-            <Routes>
+          <RouteErrorBoundary>
+            <Suspense fallback={<RouteLoading />}>
+              <Routes>
               <Route path="/" element={<Landing />} />
               <Route
                 path="/auth"
@@ -159,8 +174,9 @@ createRoot(document.getElementById("root")!).render(
                 }
               />
               <Route path="*" element={<NotFound />} />
-            </Routes>
-          </Suspense>
+              </Routes>
+            </Suspense>
+          </RouteErrorBoundary>
         </BrowserRouter>
         <Toaster />
       </ConvexAuthProvider>

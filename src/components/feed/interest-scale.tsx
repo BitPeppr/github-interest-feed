@@ -50,7 +50,7 @@ export function InterestScale({ value, onRate, onClear }: InterestScaleProps) {
             onBlur={() => setPreview(null)}
             onClick={() => onRate(level)}
             className={cn(
-              "flex size-5 items-center justify-center rounded-full border transition-colors focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none",
+              "flex size-8 items-center justify-center rounded-full border transition-colors focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none active:scale-95 sm:size-7",
               value === level
                 ? "border-foreground"
                 : "border-border hover:border-foreground/40",
@@ -59,7 +59,7 @@ export function InterestScale({ value, onRate, onClear }: InterestScaleProps) {
             <span
               aria-hidden
               className={cn(
-                "size-2 rounded-full transition-colors",
+                "size-2.5 rounded-full transition-colors", 
                 level <= shown ? "bg-foreground" : "bg-transparent",
               )}
             />
