@@ -32,12 +32,49 @@ const schema = defineSchema(
       role: v.optional(roleValidator), // role of the user. do not remove
     }).index("email", ["email"]), // index for the email. do not remove or modify
 
-    // add other tables here
+    // Topics the signed-in user wants to discover projects from.
+    topics: defineTable({
+      userId: v.id("users"),
+      slug: v.string(), // normalized GitHub topic, e.g. "machine-learning"
+      createdAt: v.number(),
+      lastSyncedAt: v.optional(v.number()),
+      lastSyncError: v.optional(v.string()),
+    })
+      .index("by_user", ["userId"])
+      .index("by_user_slug", ["userId", "slug"]),
 
-    // tableName: defineTable({
-    //   ...
-    //   // table fields
-    // }).index("by_field", ["field"])
+    // Cached GitHub repositories, shared across topics (and users).
+    repos: defineTable({
+      repoId: v.number(), // GitHub numeric id
+      fullName: v.string(),
+      owner: v.string(),
+      name: v.string(),
+      description: v.optional(v.string()),
+      url: v.string(),
+      homepage: v.optional(v.string()),
+      stars: v.number(),
+      forks: v.number(),
+      openIssues: v.number(),
+      language: v.optional(v.string()),
+      topics: v.array(v.string()),
+      license: v.optional(v.string()),
+      pushedAt: v.optional(v.number()),
+      archived: v.boolean(),
+      discoveredVia: v.array(v.string()), // topic slugs this repo was found through
+      firstSeenAt: v.number(),
+      updatedAt: v.number(),
+    }).index("by_repo_id", ["repoId"]),
+
+    // How interested the user is in a project (1-5).
+    ratings: defineTable({
+      userId: v.id("users"),
+      repoId: v.number(),
+      value: v.number(),
+      createdAt: v.number(),
+      updatedAt: v.number(),
+    })
+      .index("by_user", ["userId"])
+      .index("by_user_repo", ["userId", "repoId"]),
   },
   {
     schemaValidation: false,
