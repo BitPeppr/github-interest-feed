@@ -43,7 +43,8 @@ const schema = defineSchema(
       .index("by_user", ["userId"])
       .index("by_user_slug", ["userId", "slug"]),
 
-    // Cached GitHub repositories, shared across topics (and users).
+    // Cached GitHub projects, shared across users. The discovery action fills
+    // this in; READMEs and screenshots are pulled in lazily per project.
     repos: defineTable({
       repoId: v.number(), // GitHub numeric id
       fullName: v.string(),
@@ -60,21 +61,35 @@ const schema = defineSchema(
       license: v.optional(v.string()),
       pushedAt: v.optional(v.number()),
       archived: v.boolean(),
-      discoveredVia: v.array(v.string()), // topic slugs this repo was found through
+      discoveredVia: v.array(v.string()), // what turned this project up (topics)
       firstSeenAt: v.number(),
       updatedAt: v.number(),
+      readme: v.optional(v.string()), // raw markdown, truncated
+      images: v.optional(v.array(v.string())), // screenshots found in the readme
+      readmeFetchedAt: v.optional(v.number()),
     }).index("by_repo_id", ["repoId"]),
 
-    // How interested the user is in a project (1-5).
+    // One row per (user, project) the user has touched. A row with no `value`
+    // means the project was shown but not rated yet.
     ratings: defineTable({
       userId: v.id("users"),
       repoId: v.number(),
-      value: v.number(),
+      value: v.optional(v.number()), // 1-5 interest
+      saved: v.optional(v.boolean()),
+      hidden: v.optional(v.boolean()),
+      seenAt: v.optional(v.number()),
       createdAt: v.number(),
       updatedAt: v.number(),
     })
       .index("by_user", ["userId"])
       .index("by_user_repo", ["userId", "repoId"]),
+
+    // Where each user's endless feed has got to while walking its sources.
+    feedState: defineTable({
+      userId: v.id("users"),
+      step: v.number(),
+      updatedAt: v.number(),
+    }).index("by_user", ["userId"]),
   },
   {
     schemaValidation: false,

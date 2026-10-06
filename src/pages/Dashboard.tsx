@@ -1,83 +1,105 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useState } from "react";
+import { Link } from "react-router";
 import { useAction, useMutation, useQuery } from "convex/react";
 import { motion } from "framer-motion";
-import { Plus } from "lucide-react";
+import { Bookmark, ExternalLink, Eye, Star } from "lucide-react";
 import { toast } from "sonner";
 
 import { AppHeader } from "@/components/app-header";
+import { InterestScale } from "@/components/feed/interest-scale";
 import { Loading } from "@/components/feed/loading";
-import { RepoRow } from "@/components/feed/repo-row";
 import { TopicsPanel } from "@/components/feed/topics-panel";
-import type { FeedItem, TopicDoc } from "@/components/feed/types";
+import type { LibraryKind, Project, TopicDoc } from "@/components/feed/types";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { Spinner } from "@/components/ui/spinner";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { api } from "@/convex/_generated/api";
 import { useRatings } from "@/hooks/use-ratings";
-import { errorText } from "@/lib/format";
-import { SUGGESTED_TOPICS } from "@/lib/topics";
+import { errorText, formatCompact, formatRelative } from "@/lib/format";
 
-type FilterKey = "all" | "unrated" | "rated";
-type SortKey = "active" | "stars" | "added";
+const TABS: { key: LibraryKind; label: string }[] = [
+  { key: "saved", label: "Saved" },
+  { key: "rated", label: "Rated" },
+  { key: "hidden", label: "Hidden" },
+];
 
-const SORT_LABELS: Record<SortKey, string> = {
-  active: "Recently active",
-  stars: "Most stars",
-  added: "Recently added",
+const EMPTY_COPY: Record<LibraryKind, string> = {
+  saved:
+    "Nothing saved yet. Tap Save on a card in your feed and it waits for you here.",
+  rated: "No ratings yet. Rate a few cards and they collect here.",
+  hidden:
+    "Nothing hidden. Projects you dismiss from the feed are kept here in case you change your mind.",
 };
 
-function MicroLabel({ children }: { children: React.ReactNode }) {
+function LibraryRow({
+  project,
+  action,
+  onRate,
+  onClear,
+}: {
+  project: Project;
+  action?: React.ReactNode;
+  onRate: (repoId: number, value: number) => void;
+  onClear: (repoId: number) => void;
+}) {
+  const updated = formatRelative(project.pushedAt);
+
   return (
-    <p className="text-[11px] tracking-[0.16em] text-muted-foreground uppercase">
-      {children}
-    </p>
+    <li className="flex flex-col gap-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:gap-8">
+      <div className="min-w-0 flex-1">
+        <a
+          href={project.url}
+          target="_blank"
+          rel="noreferrer noopener"
+          className="inline-flex max-w-full items-baseline text-sm font-medium tracking-[-0.01em] underline-offset-4 hover:underline"
+        >
+          <span className="truncate">
+            <span className="text-muted-foreground">{project.owner}</span>
+            <span className="text-muted-foreground/50"> / </span>
+            {project.name}
+          </span>
+        </a>
+        <div className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+          {project.language && (
+            <span className="inline-flex items-center gap-1.5">
+              <span
+                aria-hidden
+                className="size-1.5 rounded-full bg-foreground/50"
+              />
+              {project.language}
+            </span>
+          )}
+          <span className="inline-flex items-center gap-1 tabular-nums">
+            <Star className="size-3.5" aria-hidden />
+            {formatCompact(project.stars)}
+          </span>
+          {updated && <span>Updated {updated}</span>}
+        </div>
+      </div>
+
+      <div className="flex shrink-0 items-center gap-3">
+        <InterestScale
+          value={project.rating}
+          onRate={(value) => onRate(project.repoId, value)}
+          onClear={() => onClear(project.repoId)}
+        />
+        {action}
+      </div>
+    </li>
   );
 }
 
 export default function Dashboard() {
+  const stats = useQuery(api.feed.stats);
   const topics = useQuery(api.feed.listTopics);
-  const data = useQuery(api.feed.list);
+  const [kind, setKind] = useState<LibraryKind>("saved");
+  const library = useQuery(api.feed.library, { kind });
 
   const addTopic = useMutation(api.feed.addTopic);
   const removeTopic = useMutation(api.feed.removeTopic);
+  const setSaved = useMutation(api.feed.setSaved);
+  const setHidden = useMutation(api.feed.setHidden);
   const syncTopic = useAction(api.github.syncTopic);
-  const syncAllTopics = useAction(api.github.syncAllTopics);
   const { rate, clear } = useRatings();
-
-  const [filter, setFilter] = useState<FilterKey>("all");
-  const [sort, setSort] = useState<SortKey>("active");
-  const [isRefreshing, setIsRefreshing] = useState(false);
-  const [draft, setDraft] = useState("");
-
-  const refreshAll = useCallback(async () => {
-    setIsRefreshing(true);
-    try {
-      const { results } = await syncAllTopics({});
-      const failed = results.filter((result) => result.error);
-      const added = results.reduce((sum, result) => sum + result.added, 0);
-      if (failed.length > 0) {
-        toast.error(failed[0].error ?? "Some topics could not be fetched.");
-      } else {
-        toast.success(
-          added > 0
-            ? `Found ${added} new project${added === 1 ? "" : "s"}.`
-            : "Your feed is already up to date.",
-        );
-      }
-    } catch (error) {
-      toast.error(errorText(error));
-    } finally {
-      setIsRefreshing(false);
-    }
-  }, [syncAllTopics]);
 
   const handleAddTopic = useCallback(
     async (raw: string) => {
@@ -94,34 +116,21 @@ export default function Dashboard() {
         return;
       }
 
-      setIsRefreshing(true);
       try {
         const result = await syncTopic({ topic: slug });
         if (result.error) {
           toast.error(result.error);
         } else {
           toast.success(
-            result.added > 0
-              ? `“${slug}” — ${result.added} project${result.added === 1 ? "" : "s"} added.`
-              : `“${slug}” — nothing new right now.`,
+            `“${slug}” now steers your feed. ${result.fetched} projects fetched.`,
           );
         }
       } catch (error) {
         toast.error(errorText(error));
-      } finally {
-        setIsRefreshing(false);
       }
     },
     [addTopic, syncTopic],
   );
-
-  const submitDraft = async (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const value = draft.trim();
-    if (!value) return;
-    setDraft("");
-    await handleAddTopic(value);
-  };
 
   const handleRemoveTopic = useCallback(
     (topicId: TopicDoc["_id"]) => {
@@ -132,46 +141,36 @@ export default function Dashboard() {
     [removeTopic],
   );
 
-  const items = useMemo<FeedItem[]>(() => {
-    const all = data?.items ?? [];
-    const filtered =
-      filter === "rated"
-        ? all.filter((item) => item.rating !== null)
-        : filter === "unrated"
-          ? all.filter((item) => item.rating === null)
-          : all;
-
-    return [...filtered].sort((a, b) => {
-      if (filter === "rated") {
-        return (b.rating ?? 0) - (a.rating ?? 0) || b.stars - a.stars;
-      }
-      if (sort === "stars") return b.stars - a.stars;
-      if (sort === "added") return b.firstSeenAt - a.firstSeenAt;
-      return (b.pushedAt ?? 0) - (a.pushedAt ?? 0);
-    });
-  }, [data, filter, sort]);
-
-  const ratedItems = useMemo(
-    () => (data?.items ?? []).filter((item) => item.rating !== null),
-    [data],
+  const handleUnsave = useCallback(
+    (repoId: number) => {
+      void setSaved({ repoId, saved: false }).catch((error) =>
+        toast.error(errorText(error)),
+      );
+    },
+    [setSaved],
   );
 
-  const isLoading = topics === undefined || data === undefined;
-  const topicCount = topics?.length ?? 0;
+  const handleRestore = useCallback(
+    (repoId: number) => {
+      void setHidden({ repoId, hidden: false })
+        .then(() => toast.success("Back in your feed."))
+        .catch((error) => toast.error(errorText(error)));
+    },
+    [setHidden],
+  );
 
-  const averageInterest =
-    ratedItems.length > 0
-      ? ratedItems.reduce((sum, item) => sum + (item.rating ?? 0), 0) /
-        ratedItems.length
-      : null;
+  const counts: Record<string, number> = stats?.counts ?? {};
+  const isLoading = stats === undefined || topics === undefined;
 
-  const stats = [
-    { label: "In your feed", value: String(data?.total ?? 0) },
-    { label: "Topics", value: String(topicCount) },
-    { label: "Rated", value: String(ratedItems.length) },
+  const cards = [
+    { label: "In your catalog", value: String(stats?.catalogSize ?? 0) },
+    { label: "Unseen", value: String(stats?.unseen ?? 0) },
+    { label: "Rated", value: String(stats?.rated ?? 0) },
     {
       label: "Average interest",
-      value: averageInterest === null ? "—" : averageInterest.toFixed(1),
+      value: stats?.averageInterest
+        ? stats.averageInterest.toFixed(1)
+        : "—",
     },
   ];
 
@@ -185,78 +184,33 @@ export default function Dashboard() {
         transition={{ duration: 0.3, ease: "easeOut" }}
         className="mx-auto w-full max-w-6xl px-6 py-10 lg:py-12"
       >
-        {isLoading ? (
-          <Loading label="Loading your feed…" />
-        ) : topicCount === 0 ? (
-          <section className="mx-auto max-w-xl py-10 text-center">
-            <MicroLabel>Version 1</MicroLabel>
-            <h1 className="mt-4 text-3xl font-semibold tracking-[-0.025em] text-balance">
-              Start with a topic or two.
+        <div className="flex flex-wrap items-end justify-between gap-4">
+          <div>
+            <h1 className="text-2xl font-semibold tracking-[-0.02em]">
+              Your dashboard
             </h1>
-            <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
-              Your feed only contains projects from the topics you choose here.
-              Add one and GitHub Interest Feed fetches the most-starred projects
-              under it, ready for you to rate.
+            <p className="mt-1.5 text-sm text-muted-foreground">
+              How much you have rated, what you saved, and the topics nudging
+              your feed.
             </p>
+          </div>
+          <Button className="gap-2" asChild>
+            <Link to="/feed">Open your feed</Link>
+          </Button>
+        </div>
 
-            <form onSubmit={submitDraft} className="mt-8 flex gap-2">
-              <Input
-                value={draft}
-                onChange={(event) => setDraft(event.target.value)}
-                placeholder="Add a GitHub topic, e.g. rust"
-                aria-label="Add a GitHub topic"
-                className="h-10"
-                disabled={isRefreshing}
-              />
-              <Button
-                type="submit"
-                className="h-10 shrink-0 gap-2"
-                disabled={isRefreshing || draft.trim().length === 0}
-              >
-                {isRefreshing ? (
-                  <Spinner className="size-3.5" />
-                ) : (
-                  <Plus className="size-4" />
-                )}
-                Add topic
-              </Button>
-            </form>
-
-            <div className="mt-4 flex flex-wrap justify-center gap-1.5">
-              {SUGGESTED_TOPICS.slice(0, 5).map((topic) => (
-                <button
-                  key={topic}
-                  type="button"
-                  disabled={isRefreshing}
-                  onClick={() => void handleAddTopic(topic)}
-                  className="rounded-full border border-border px-2.5 py-1 text-[11px] text-muted-foreground transition-colors hover:border-foreground/30 hover:text-foreground disabled:opacity-50"
-                >
-                  {topic}
-                </button>
-              ))}
-            </div>
-          </section>
+        {isLoading ? (
+          <Loading label="Loading your dashboard…" />
         ) : (
           <>
-            <div className="flex flex-wrap items-end justify-between gap-4">
-              <div>
-                <h1 className="text-2xl font-semibold tracking-[-0.02em]">
-                  Your dashboard
-                </h1>
-                <p className="mt-1.5 text-sm text-muted-foreground">
-                  Your topics, your feed, and every rating you have given.
-                </p>
-              </div>
-            </div>
-
             <dl className="mt-8 grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-border bg-border sm:grid-cols-4">
-              {stats.map((stat) => (
-                <div key={stat.label} className="bg-background px-5 py-4">
+              {cards.map((card) => (
+                <div key={card.label} className="bg-background px-5 py-4">
                   <dt className="text-[11px] tracking-[0.14em] text-muted-foreground uppercase">
-                    {stat.label}
+                    {card.label}
                   </dt>
                   <dd className="mt-2 text-2xl font-semibold tracking-[-0.02em] tabular-nums">
-                    {stat.value}
+                    {card.value}
                   </dd>
                 </div>
               ))}
@@ -265,103 +219,92 @@ export default function Dashboard() {
             <div className="mt-10 grid gap-10 lg:grid-cols-[236px_minmax(0,1fr)] lg:gap-14">
               <TopicsPanel
                 topics={topics ?? []}
-                counts={data?.counts ?? {}}
+                counts={counts}
                 onAdd={handleAddTopic}
                 onRemove={handleRemoveTopic}
-                onRefresh={() => void refreshAll()}
-                isRefreshing={isRefreshing}
               />
 
               <section>
-                <div className="flex flex-wrap items-end justify-between gap-6 border-b border-border pb-4">
+                <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border pb-4">
                   <div>
                     <h2 className="text-lg font-semibold tracking-[-0.015em]">
-                      Your feed
+                      Your library
                     </h2>
                     <p className="mt-1 text-sm text-muted-foreground">
-                      {data?.total ?? 0} project
-                      {(data?.total ?? 0) === 1 ? "" : "s"} from {topicCount}{" "}
-                      topic{topicCount === 1 ? "" : "s"} · {ratedItems.length}{" "}
-                      rated
+                      {stats?.saved ?? 0} saved · {stats?.rated ?? 0} rated ·{" "}
+                      {stats?.hidden ?? 0} hidden
                     </p>
                   </div>
-
-                  <div className="flex flex-wrap items-center gap-3">
-                    <ToggleGroup
-                      type="single"
-                      variant="outline"
-                      size="sm"
-                      value={filter}
-                      onValueChange={(value) => {
-                        if (value) setFilter(value as FilterKey);
-                      }}
-                    >
-                      <ToggleGroupItem value="all">All</ToggleGroupItem>
-                      <ToggleGroupItem value="unrated">Unrated</ToggleGroupItem>
-                      <ToggleGroupItem value="rated">Rated</ToggleGroupItem>
-                    </ToggleGroup>
-
-                    {filter !== "rated" && (
-                      <Select
-                        value={sort}
-                        onValueChange={(value) => setSort(value as SortKey)}
-                      >
-                        <SelectTrigger
-                          size="sm"
-                          className="w-[168px] text-xs"
-                          aria-label="Sort feed"
-                        >
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {(Object.keys(SORT_LABELS) as SortKey[]).map((key) => (
-                            <SelectItem key={key} value={key}>
-                              {SORT_LABELS[key]}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    )}
-                  </div>
+                  <ToggleGroup
+                    type="single"
+                    variant="outline"
+                    size="sm"
+                    value={kind}
+                    onValueChange={(value) => {
+                      if (value) setKind(value as LibraryKind);
+                    }}
+                  >
+                    {TABS.map((tab) => (
+                      <ToggleGroupItem key={tab.key} value={tab.key}>
+                        {tab.label}
+                      </ToggleGroupItem>
+                    ))}
+                  </ToggleGroup>
                 </div>
 
-                <p className="pt-4 pb-1 text-[11px] tracking-[0.12em] text-muted-foreground uppercase">
-                  Rate 1 – 5 · 1 not for me · 5 love it
-                </p>
-
-                {data && data.total === 0 ? (
-                  isRefreshing ? (
-                    <Loading label="Fetching projects from GitHub…" />
-                  ) : (
-                    <div className="mt-4 rounded-lg border border-dashed border-border px-6 py-10 text-center">
-                      <p className="text-sm font-medium">Nothing fetched yet</p>
-                      <p className="mx-auto mt-2 max-w-sm text-sm leading-relaxed text-muted-foreground">
-                        Fetch now and GitHub returns the most-starred projects
-                        under your topics. Everything it returns stays in your
-                        catalog.
-                      </p>
-                      <Button
-                        className="mt-5 gap-2"
-                        onClick={() => void refreshAll()}
-                      >
-                        Fetch projects
-                      </Button>
-                    </div>
-                  )
-                ) : items.length === 0 ? (
-                  <p className="py-12 text-center text-sm text-muted-foreground">
-                    {filter === "unrated"
-                      ? "Every project in your feed has a rating. Add another topic for more."
-                      : "No rated projects yet. Rate something and it lands here."}
+                {library === undefined || library === null ? (
+                  <Loading label="Loading your library…" />
+                ) : library.items.length === 0 ? (
+                  <p className="max-w-md py-12 text-sm leading-relaxed text-muted-foreground">
+                    {EMPTY_COPY[kind]}
                   </p>
                 ) : (
                   <ul className="divide-y divide-border">
-                    {items.map((item) => (
-                      <RepoRow
-                        key={item.repoId}
-                        item={item}
+                    {library.items.map((project) => (
+                      <LibraryRow
+                        key={project.repoId}
+                        project={project}
                         onRate={rate}
                         onClear={clear}
+                        action={
+                          kind === "hidden" ? (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="gap-1.5"
+                              onClick={() => handleRestore(project.repoId)}
+                            >
+                              <Eye className="size-3.5" />
+                              Restore
+                            </Button>
+                          ) : kind === "saved" ? (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="gap-1.5 text-muted-foreground hover:text-foreground"
+                              onClick={() => handleUnsave(project.repoId)}
+                            >
+                              <Bookmark className="size-3.5" />
+                              Remove
+                            </Button>
+                          ) : (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="gap-1.5 text-muted-foreground hover:text-foreground"
+                              asChild
+                            >
+                              <a
+                                href={project.url}
+                                target="_blank"
+                                rel="noreferrer noopener"
+                              >
+                                <ExternalLink className="size-3.5" />
+                                GitHub
+                              </a>
+                            </Button>
+                          )
+                        }
                       />
                     ))}
                   </ul>

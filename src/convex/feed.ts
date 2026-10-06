@@ -6,8 +6,10 @@ import {
   internalQuery,
   mutation,
   query,
+  type MutationCtx,
   type QueryCtx,
 } from "./_generated/server";
+
 
 /**
  * Shape of a repository as scraped from the GitHub search API. Shared between
@@ -44,22 +46,52 @@ export function normalizeTopic(raw: string): string {
   return cleaned.replace(/^-+/, "").replace(/-+$/, "");
 }
 
-/** The topics the signed-in user is following, oldest first. */
-export const listTopics = query({
-  args: {},
-  handler: async (ctx) => {
-    const userId = await getAuthUserId(ctx);
-    if (!userId) return [];
-    const topics = await ctx.db
-      .query("topics")
-      .withIndex("by_user", (q) => q.eq("userId", userId))
-      .collect();
-    return topics.sort((a, b) => a.createdAt - b.createdAt);
-  },
-});
+/**
+ * Broad topics the feed can explore on its own. They keep the discovery feed
+ * endless even when the user has followed no topics at all.
+ */
+export const DEFAULT_TOPICS = [
+  "typescript",
+  "javascript",
+  "python",
+  "rust",
+  "go",
+  "cli",
+  "devtools",
+  "web-development",
+  "machine-learning",
+  "data-science",
+  "react",
+  "vue",
+  "svelte",
+  "nodejs",
+  "docker",
+  "kubernetes",
+  "linux",
+  "terminal",
+  "database",
+  "api",
+  "security",
+  "compilers",
+  "game-development",
+  "mobile",
+  "devops",
+  "testing",
+  "webassembly",
+  "automation",
+  "productivity",
+  "design-system",
+];
 
-/** The shape every project row is rendered from, rating included. */
-function toProject(repo: Doc<"repos">, rating: number | null) {
+const FEED_WINDOW = 24;
+const MAX_README_CHARS = 12_000;
+
+/* ------------------------------------------------------------------ *
+ * Shared helpers                                                      *
+ * ------------------------------------------------------------------ */
+
+/** The shape every project card is rendered from. */
+function toProject(repo: Doc<"repos">, interaction: Doc<"ratings"> | null) {
   return {
     repoId: repo.repoId,
     fullName: repo.fullName,
@@ -67,34 +99,50 @@ function toProject(repo: Doc<"repos">, rating: number | null) {
     name: repo.name,
     description: repo.description ?? null,
     url: repo.url,
+    homepage: repo.homepage ?? null,
     stars: repo.stars,
     forks: repo.forks,
+    openIssues: repo.openIssues,
     language: repo.language ?? null,
+    license: repo.license ?? null,
     topics: repo.topics,
     pushedAt: repo.pushedAt ?? null,
     archived: repo.archived,
     firstSeenAt: repo.firstSeenAt,
     discoveredVia: repo.discoveredVia,
-    rating,
+    readme: repo.readme ?? null,
+    readmeLoaded: repo.readmeFetchedAt !== undefined,
+    images: repo.images ?? [],
+    rating: interaction?.value ?? null,
+    saved: interaction?.saved === true,
+    hidden: interaction?.hidden === true,
   };
 }
 
-async function ratingsForUser(
+async function interactionsForUser(
   ctx: QueryCtx,
   userId: Id<"users">,
-): Promise<Map<number, number>> {
-  const ratings = await ctx.db
+): Promise<Map<number, Doc<"ratings">>> {
+  const rows = await ctx.db
     .query("ratings")
     .withIndex("by_user", (q) => q.eq("userId", userId))
     .collect();
-  return new Map(ratings.map((rating) => [rating.repoId, rating.value]));
+  return new Map(rows.map((row) => [row.repoId, row]));
 }
 
-function countBy(
-  values: Iterable<string>,
-  counts: Map<string, number>,
-): void {
+async function findRepo(
+  ctx: QueryCtx,
+  repoId: number,
+): Promise<Doc<"repos"> | null> {
+  return await ctx.db
+    .query("repos")
+    .withIndex("by_repo_id", (q) => q.eq("repoId", repoId))
+    .unique();
+}
+
+function countBy(values: Iterable<string>, counts: Map<string, number>): void {
   for (const value of values) {
+    if (!value) continue;
     counts.set(value, (counts.get(value) ?? 0) + 1);
   }
 }
@@ -109,106 +157,63 @@ function facets(
     .map(([name, count]) => ({ name, count }));
 }
 
-/**
- * The dashboard feed: every cached project that arrived through one of the
- * user's topics, with the user's interest rating attached (null when unrated).
- */
-export const list = query({
+/** Never lose a project to a tie: the jitter is stable per project. */
+function noveltyScore(
+  repo: Doc<"repos">,
+  topicAffinity: Map<string, number>,
+  languageAffinity: Map<string, number>,
+  now: number,
+): number {
+  if (repo.archived) return -100;
+
+  let score = Math.log10(repo.stars + 1) * 0.5;
+  if (repo.pushedAt && now - repo.pushedAt < 120 * 24 * 60 * 60 * 1000) {
+    score += 0.6;
+  }
+  for (const topic of repo.topics) {
+    score += (topicAffinity.get(topic) ?? 0) * 0.4;
+  }
+  if (repo.language) score += (languageAffinity.get(repo.language) ?? 0) * 0.6;
+  score += ((repo.repoId % 997) / 997) * 0.45;
+  return score;
+}
+
+/* ------------------------------------------------------------------ *
+ * Topics (optional: they steer discovery, they do not define it)      *
+ * ------------------------------------------------------------------ */
+
+export const listTopics = query({
   args: {},
   handler: async (ctx) => {
     const userId = await getAuthUserId(ctx);
-    if (!userId) return null;
-
+    if (!userId) return [];
     const topics = await ctx.db
       .query("topics")
       .withIndex("by_user", (q) => q.eq("userId", userId))
       .collect();
-    const slugs = topics.map((topic) => topic.slug);
-    const slugSet = new Set(slugs);
-
-    const ratingByRepo = await ratingsForUser(ctx, userId);
-    const repoDocs = await ctx.db.query("repos").collect();
-    const items = repoDocs
-      .filter((repo) => repo.discoveredVia.some((slug) => slugSet.has(slug)))
-      .map((repo) => toProject(repo, ratingByRepo.get(repo.repoId) ?? null));
-
-    const counts: Record<string, number> = {};
-    for (const slug of slugs) counts[slug] = 0;
-    for (const item of items) {
-      for (const slug of item.discoveredVia) {
-        if (slug in counts) counts[slug] += 1;
-      }
-    }
-
-    return {
-      items,
-      counts,
-      total: items.length,
-      rated: items.filter((item) => item.rating !== null).length,
-    };
+    return topics.sort((a, b) => a.createdAt - b.createdAt);
   },
 });
 
-/**
- * The catalog: every project fetched so far, not only the ones in the current
- * feed, so old topics stay browsable and searchable.
- */
-export const catalog = query({
-  args: {},
-  handler: async (ctx) => {
-    const userId = await getAuthUserId(ctx);
-    if (!userId) return null;
-
-    const ratingByRepo = await ratingsForUser(ctx, userId);
-    const repoDocs = await ctx.db.query("repos").collect();
-    const items = repoDocs.map((repo) =>
-      toProject(repo, ratingByRepo.get(repo.repoId) ?? null),
-    );
-
-    const languageCounts = new Map<string, number>();
-    const topicCounts = new Map<string, number>();
-    for (const repo of repoDocs) {
-      if (repo.language) countBy([repo.language], languageCounts);
-      countBy(repo.topics, topicCounts);
-    }
-
-    return {
-      items,
-      total: items.length,
-      rated: items.filter((item) => item.rating !== null).length,
-      languages: facets(languageCounts, 8),
-      topics: facets(topicCounts, 14),
-    };
-  },
-});
-
-/** Add a topic to the user's list. Idempotent. */
 export const addTopic = mutation({
   args: { topic: v.string() },
   handler: async (ctx, { topic }) => {
     const userId = await getAuthUserId(ctx);
-    if (!userId) throw new Error("Sign in to pick topics.");
+    if (!userId) throw new Error("Sign in to follow topics.");
     const slug = normalizeTopic(topic);
     if (!slug) throw new Error('Enter a topic like "rust" or "devtools".');
 
     const existing = await ctx.db
       .query("topics")
-      .withIndex("by_user_slug", (q) =>
-        q.eq("userId", userId).eq("slug", slug),
-      )
+      .withIndex("by_user_slug", (q) => q.eq("userId", userId).eq("slug", slug))
       .unique();
     if (existing) return { slug, created: false };
 
-    await ctx.db.insert("topics", {
-      userId,
-      slug,
-      createdAt: Date.now(),
-    });
+    await ctx.db.insert("topics", { userId, slug, createdAt: Date.now() });
     return { slug, created: true };
   },
 });
 
-/** Stop following a topic. Cached repos are kept so ratings survive. */
 export const removeTopic = mutation({
   args: { topicId: v.id("topics") },
   handler: async (ctx, { topicId }) => {
@@ -221,38 +226,256 @@ export const removeTopic = mutation({
   },
 });
 
-/** Record how interested the user is in a project (1 = low, 5 = high). */
+/* ------------------------------------------------------------------ *
+ * The discovery feed                                                  *
+ * ------------------------------------------------------------------ */
+
+/**
+ * The next window of the feed: projects the user has never been shown, ranked
+ * by a mix of popularity, freshness and what they have rated highly before.
+ * Nothing here is limited to the user's topics — those only add weight.
+ */
+export const discovery = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) return null;
+
+    const rows = await ctx.db
+      .query("ratings")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect();
+    const touched = new Set(rows.map((row) => row.repoId));
+    const loved = new Set(
+      rows.filter((row) => (row.value ?? 0) >= 4).map((row) => row.repoId),
+    );
+
+    const repos = await ctx.db.query("repos").collect();
+    const candidates = repos.filter((repo) => !touched.has(repo.repoId));
+
+    const topicAffinity = new Map<string, number>();
+    const languageAffinity = new Map<string, number>();
+    for (const repo of repos) {
+      if (!loved.has(repo.repoId)) continue;
+      countBy(repo.topics, topicAffinity);
+      if (repo.language) countBy([repo.language], languageAffinity);
+    }
+
+    const now = Date.now();
+    const window = candidates
+      .map((repo) => ({
+        repoId: repo.repoId,
+        score: noveltyScore(repo, topicAffinity, languageAffinity, now),
+      }))
+      .sort((a, b) => b.score - a.score || a.repoId - b.repoId)
+      .slice(0, FEED_WINDOW);
+
+    return {
+      repoIds: window.map((entry) => entry.repoId),
+      remaining: candidates.length,
+      catalogSize: repos.length,
+      rated: rows.filter((row) => typeof row.value === "number").length,
+    };
+  },
+});
+
+/** Full card data for the projects the client is holding, freshest first. */
+export const projects = query({
+  args: { repoIds: v.array(v.number()) },
+  handler: async (ctx, { repoIds }) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) return null;
+
+    // The client holds a rolling window of cards; this matches its cap.
+    const unique = [...new Set(repoIds)].slice(0, 160);
+    const interactions = await interactionsForUser(ctx, userId);
+
+    const items = await Promise.all(
+      unique.map(async (repoId) => {
+        const repo = await findRepo(ctx, repoId);
+        return repo
+          ? toProject(repo, interactions.get(repoId) ?? null)
+          : null;
+      }),
+    );
+
+    return { items: items.filter((item) => item !== null) };
+  },
+});
+
+/** Saved, rated and hidden projects — the user's own library. */
+export const library = query({
+  args: {
+    kind: v.union(
+      v.literal("saved"),
+      v.literal("rated"),
+      v.literal("hidden"),
+    ),
+  },
+  handler: async (ctx, { kind }) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) return null;
+
+    const rows = await ctx.db
+      .query("ratings")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect();
+
+    const selected = rows
+      .filter((row) =>
+        kind === "saved"
+          ? row.saved === true
+          : kind === "hidden"
+            ? row.hidden === true
+            : typeof row.value === "number",
+      )
+      .sort((a, b) => b.updatedAt - a.updatedAt);
+
+    const items = await Promise.all(
+      selected.map(async (row) => {
+        const repo = await findRepo(ctx, row.repoId);
+        return repo ? toProject(repo, row) : null;
+      }),
+    );
+
+    return {
+      items: items.filter((item) => item !== null),
+      total: selected.length,
+    };
+  },
+});
+
+/** Everything the dashboard shows at a glance. */
+export const stats = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) return null;
+
+    const topics = await ctx.db
+      .query("topics")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect();
+    const rows = await ctx.db
+      .query("ratings")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect();
+    const repos = await ctx.db.query("repos").collect();
+
+    const rated = rows.filter((row) => typeof row.value === "number");
+    const averageInterest =
+      rated.length > 0
+        ? rated.reduce((sum, row) => sum + (row.value ?? 0), 0) / rated.length
+        : null;
+
+    const counts: Record<string, number> = {};
+    for (const topic of topics) counts[topic.slug] = 0;
+    for (const repo of repos) {
+      for (const slug of repo.discoveredVia) {
+        if (slug in counts) counts[slug] += 1;
+      }
+    }
+
+    const touched = new Set(rows.map((row) => row.repoId));
+
+    return {
+      catalogSize: repos.length,
+      unseen: repos.filter((repo) => !touched.has(repo.repoId)).length,
+      rated: rated.length,
+      saved: rows.filter((row) => row.saved === true).length,
+      hidden: rows.filter((row) => row.hidden === true).length,
+      averageInterest,
+      counts,
+    };
+  },
+});
+
+/**
+ * The catalog: every project fetched so far, hidden ones aside, so old
+ * discoveries stay browsable and searchable.
+ */
+export const catalog = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) return null;
+
+    const interactions = await interactionsForUser(ctx, userId);
+    const repos = (await ctx.db.query("repos").collect()).filter(
+      (repo) => interactions.get(repo.repoId)?.hidden !== true,
+    );
+
+    const languageCounts = new Map<string, number>();
+    const topicCounts = new Map<string, number>();
+    for (const repo of repos) {
+      if (repo.language) countBy([repo.language], languageCounts);
+      countBy(repo.topics, topicCounts);
+    }
+
+    return {
+      items: repos.map((repo) =>
+        toProject(repo, interactions.get(repo.repoId) ?? null),
+      ),
+      total: repos.length,
+      rated: repos.filter(
+        (repo) => typeof interactions.get(repo.repoId)?.value === "number",
+      ).length,
+      languages: facets(languageCounts, 8),
+      topics: facets(topicCounts, 14),
+    };
+  },
+});
+
+/* ------------------------------------------------------------------ *
+ * Interactions                                                        *
+ * ------------------------------------------------------------------ */
+
+async function upsertInteraction(
+  ctx: MutationCtx,
+  userId: Id<"users">,
+  repoId: number,
+  patch: {
+    value?: number;
+    saved?: boolean;
+    hidden?: boolean;
+    seenAt?: number;
+  },
+): Promise<void> {
+  const now = Date.now();
+  const existing = await ctx.db
+    .query("ratings")
+    .withIndex("by_user_repo", (q) =>
+      q.eq("userId", userId).eq("repoId", repoId),
+    )
+    .unique();
+
+  if (existing) {
+    await ctx.db.patch(existing._id, { ...patch, updatedAt: now });
+    return;
+  }
+  await ctx.db.insert("ratings", {
+    userId,
+    repoId,
+    seenAt: now,
+    createdAt: now,
+    updatedAt: now,
+    ...patch,
+  });
+}
+
+/** How interested the user is in a project (1 = low, 5 = high). */
 export const setRating = mutation({
   args: { repoId: v.number(), value: v.number() },
   handler: async (ctx, { repoId, value }) => {
     const userId = await getAuthUserId(ctx);
     if (!userId) throw new Error("Sign in to rate projects.");
     const clamped = Math.max(1, Math.min(5, Math.round(value)));
-    const now = Date.now();
-
-    const existing = await ctx.db
-      .query("ratings")
-      .withIndex("by_user_repo", (q) =>
-        q.eq("userId", userId).eq("repoId", repoId),
-      )
-      .unique();
-
-    if (existing) {
-      await ctx.db.patch(existing._id, { value: clamped, updatedAt: now });
-    } else {
-      await ctx.db.insert("ratings", {
-        userId,
-        repoId,
-        value: clamped,
-        createdAt: now,
-        updatedAt: now,
-      });
-    }
+    await upsertInteraction(ctx, userId, repoId, { value: clamped });
     return clamped;
   },
 });
 
-/** Remove a rating so the project is unrated again. */
+/** Remove a rating without forgetting that the project has been seen. */
 export const clearRating = mutation({
   args: { repoId: v.number() },
   handler: async (ctx, { repoId }) => {
@@ -264,13 +487,69 @@ export const clearRating = mutation({
         q.eq("userId", userId).eq("repoId", repoId),
       )
       .unique();
-    if (existing) await ctx.db.delete(existing._id);
+    if (existing) {
+      await ctx.db.patch(existing._id, {
+        value: undefined,
+        updatedAt: Date.now(),
+      });
+    }
     return null;
   },
 });
 
+/** Keep a project for later. */
+export const setSaved = mutation({
+  args: { repoId: v.number(), saved: v.boolean() },
+  handler: async (ctx, { repoId, saved }) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) throw new Error("Sign in to save projects.");
+    await upsertInteraction(ctx, userId, repoId, { saved });
+    return saved;
+  },
+});
+
+/** Hide a project: out of the feed and the catalog, kept in the library. */
+export const setHidden = mutation({
+  args: { repoId: v.number(), hidden: v.boolean() },
+  handler: async (ctx, { repoId, hidden }) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) throw new Error("Sign in to hide projects.");
+    await upsertInteraction(ctx, userId, repoId, { hidden });
+    return hidden;
+  },
+});
+
+/** Mark the projects that have scrolled past, so the feed keeps moving. */
+export const markSeen = mutation({
+  args: { repoIds: v.array(v.number()) },
+  handler: async (ctx, { repoIds }) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) return null;
+
+    const unique = [...new Set(repoIds)].slice(0, 60);
+    for (const repoId of unique) {
+      const existing = await ctx.db
+        .query("ratings")
+        .withIndex("by_user_repo", (q) =>
+          q.eq("userId", userId).eq("repoId", repoId),
+        )
+        .unique();
+      if (existing) continue;
+      const now = Date.now();
+      await ctx.db.insert("ratings", {
+        userId,
+        repoId,
+        seenAt: now,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+    return unique.length;
+  },
+});
+
 /* ------------------------------------------------------------------ *
- * Internal functions used by the GitHub action (actions have no db).  *
+ * Internal functions used by the GitHub actions (actions have no db)  *
  * ------------------------------------------------------------------ */
 
 export const saveDiscoveredRepos = internalMutation({
@@ -282,7 +561,6 @@ export const saveDiscoveredRepos = internalMutation({
   handler: async (ctx, { userId, topicSlug, repos }) => {
     const now = Date.now();
     let added = 0;
-    let newForUser = 0;
 
     for (const repo of repos) {
       const existing = await ctx.db
@@ -291,19 +569,16 @@ export const saveDiscoveredRepos = internalMutation({
         .unique();
 
       if (existing) {
-        if (!existing.discoveredVia.includes(topicSlug)) {
-          newForUser += 1;
-          await ctx.db.patch(existing._id, {
-            ...repo,
-            discoveredVia: [...existing.discoveredVia, topicSlug],
-            updatedAt: now,
-          });
-        } else {
-          await ctx.db.patch(existing._id, { ...repo, updatedAt: now });
-        }
+        const discoveredVia = existing.discoveredVia.includes(topicSlug)
+          ? existing.discoveredVia
+          : [...existing.discoveredVia, topicSlug];
+        await ctx.db.patch(existing._id, {
+          ...repo,
+          discoveredVia,
+          updatedAt: now,
+        });
       } else {
         added += 1;
-        newForUser += 1;
         await ctx.db.insert("repos", {
           ...repo,
           discoveredVia: [topicSlug],
@@ -326,7 +601,7 @@ export const saveDiscoveredRepos = internalMutation({
       });
     }
 
-    return { added, refreshed: repos.length, newForUser };
+    return { added, refreshed: repos.length };
   },
 });
 
@@ -348,13 +623,118 @@ export const markTopicError = internalMutation({
   },
 });
 
-export const topicSlugsForUser = internalQuery({
-  args: { userId: v.id("users") },
-  handler: async (ctx, { userId }) => {
+/**
+ * Decide what to search next: the user's own topics first, then the topics of
+ * projects they rated highly, then a broad pool so discovery never stalls.
+ * Advances the user's cursor so repeat fetches keep returning new projects.
+ */
+export const planSearches = internalMutation({
+  args: { userId: v.id("users"), count: v.number() },
+  handler: async (ctx, { userId, count }) => {
     const topics = await ctx.db
       .query("topics")
       .withIndex("by_user", (q) => q.eq("userId", userId))
       .collect();
-    return topics.sort((a, b) => a.createdAt - b.createdAt).map((t) => t.slug);
+    const rows = await ctx.db
+      .query("ratings")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect();
+
+    const learned = new Map<string, number>();
+    for (const row of rows) {
+      if ((row.value ?? 0) < 4) continue;
+      const repo = await ctx.db
+        .query("repos")
+        .withIndex("by_repo_id", (q) => q.eq("repoId", row.repoId))
+        .unique();
+      if (!repo) continue;
+      countBy(repo.topics, learned);
+      if (repo.language) countBy([normalizeTopic(repo.language)], learned);
+    }
+
+    const pool = [
+      ...new Set([
+        ...topics.map((topic) => topic.slug),
+        ...facets(learned, 6).map((entry) => entry.name),
+        ...DEFAULT_TOPICS,
+      ]),
+    ].filter(Boolean);
+
+    const state = await ctx.db
+      .query("feedState")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .unique();
+    const step = state?.step ?? 0;
+
+    const requested = Math.max(1, Math.min(count, 4));
+    const specs = Array.from({ length: requested }, (_, offset) => {
+      const index = step + offset;
+      return {
+        topic: pool[index % pool.length],
+        // Alternate the ordering so the feed is not just the famous few.
+        sort: index % 2 === 0 ? ("stars" as const) : ("updated" as const),
+        page: Math.floor(index / pool.length) + 1,
+      };
+    });
+
+    const now = Date.now();
+    if (state) {
+      await ctx.db.patch(state._id, { step: step + requested, updatedAt: now });
+    } else {
+      await ctx.db.insert("feedState", { userId, step: requested, updatedAt: now });
+    }
+
+    return { specs };
+  },
+});
+
+/** Repositories still missing their README, limited to what was asked for. */
+export const projectsToEnrich = internalQuery({
+  args: { repoIds: v.array(v.number()) },
+  handler: async (ctx, { repoIds }) => {
+    const unique = [...new Set(repoIds)].slice(0, 8);
+    const repos = await Promise.all(
+      unique.map((repoId) =>
+        ctx.db
+          .query("repos")
+          .withIndex("by_repo_id", (q) => q.eq("repoId", repoId))
+          .unique(),
+      ),
+    );
+    return repos
+      .filter((repo) => repo !== null)
+      .filter((repo) => repo.readmeFetchedAt === undefined)
+      .map((repo) => ({ repoId: repo.repoId, fullName: repo.fullName }));
+  },
+});
+
+export const saveEnrichment = internalMutation({
+  args: {
+    entries: v.array(
+      v.object({
+        repoId: v.number(),
+        readme: v.union(v.string(), v.null()),
+        images: v.array(v.string()),
+      }),
+    ),
+  },
+  handler: async (ctx, { entries }) => {
+    const now = Date.now();
+    for (const entry of entries) {
+      const repo = await ctx.db
+        .query("repos")
+        .withIndex("by_repo_id", (q) => q.eq("repoId", entry.repoId))
+        .unique();
+      if (!repo) continue;
+      await ctx.db.patch(repo._id, {
+        readme: entry.readme
+          ? entry.readme.slice(0, MAX_README_CHARS)
+          : undefined,
+        images: entry.images,
+        readmeFetchedAt: now,
+        updatedAt: now,
+      });
+    }
+    return entries.length;
   },
 });

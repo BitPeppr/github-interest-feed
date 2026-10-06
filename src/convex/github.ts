@@ -4,9 +4,20 @@ import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { action, type ActionCtx } from "./_generated/server";
 import { normalizeTopic, type DiscoveredRepo } from "./feed";
+import { extractImages, readmeUrls } from "./lib/readme";
 
 const GITHUB_SEARCH_URL = "https://api.github.com/search/repositories";
-const RESULTS_PER_TOPIC = 40;
+const USER_AGENT = "github-interest-feed";
+const RESULTS_PER_SEARCH = 30;
+/** READMEs are fetched a few at a time, for the cards about to be shown. */
+const MAX_ENRICH_PER_CALL = 6;
+const README_ATTEMPTS = 3;
+
+interface SearchSpec {
+  topic: string;
+  sort: "stars" | "updated";
+  page: number;
+}
 
 interface GitHubSearchItem {
   id: number;
@@ -30,24 +41,29 @@ interface GitHubSearchResponse {
   items?: GitHubSearchItem[];
 }
 
-export interface SyncResult {
-  slug: string;
-  /** Repositories this sync added to the cache for the first time. */
+export interface FetchResult {
+  /** Projects this fetch added to the catalog for the first time. */
   added: number;
-  /** How many repositories GitHub returned for the topic. */
+  /** Projects GitHub returned across all searches. */
   fetched: number;
-  /** Error message when the topic could not be synced, otherwise null. */
+  errors: { topic: string; message: string }[];
+}
+
+export interface TopicSyncResult {
+  slug: string;
+  added: number;
+  fetched: number;
   error: string | null;
 }
 
 function githubHeaders(): Record<string, string> {
   const headers: Record<string, string> = {
     Accept: "application/vnd.github+json",
-    "User-Agent": "github-interest-feed",
+    "User-Agent": USER_AGENT,
     "X-GitHub-Api-Version": "2022-11-28",
   };
   // Optional: a personal access token raises GitHub's rate limit from
-  // 10 to 30 searches per minute. Everything works without it.
+  // 10 to 30 searches per minute. Discovery works without it.
   const token = process.env.GITHUB_TOKEN;
   if (token) headers.Authorization = `Bearer ${token}`;
   return headers;
@@ -65,11 +81,11 @@ function rateLimitMessage(response: Response): string {
       1,
       Math.ceil((reset * 1000 - Date.now()) / 60_000),
     );
-    return `GitHub is limiting requests. Try again in about ${minutes} minute${
+    return `GitHub is limiting searches. Try again in about ${minutes} minute${
       minutes === 1 ? "" : "s"
     }, or add a GITHUB_TOKEN for a higher limit.`;
   }
-  return "GitHub is limiting requests right now. Try again in a minute.";
+  return "GitHub is limiting searches right now. The feed will try again shortly.";
 }
 
 function mapItem(item: GitHubSearchItem): DiscoveredRepo {
@@ -95,24 +111,23 @@ function mapItem(item: GitHubSearchItem): DiscoveredRepo {
   };
 }
 
-/** Search GitHub for the most-starred repositories tagged with `slug`. */
-async function fetchTopicRepos(slug: string): Promise<DiscoveredRepo[]> {
+async function searchRepos(spec: SearchSpec): Promise<DiscoveredRepo[]> {
   const url = new URL(GITHUB_SEARCH_URL);
-  url.searchParams.set("q", `topic:${slug}`);
-  url.searchParams.set("sort", "stars");
+  const qualifier = spec.sort === "updated" ? " stars:>=25" : "";
+  url.searchParams.set("q", `topic:${spec.topic}${qualifier}`);
+  url.searchParams.set("sort", spec.sort);
   url.searchParams.set("order", "desc");
-  url.searchParams.set("per_page", String(RESULTS_PER_TOPIC));
+  url.searchParams.set("per_page", String(RESULTS_PER_SEARCH));
+  url.searchParams.set("page", String(spec.page));
 
-  const response = await fetch(url.toString(), {
-    headers: githubHeaders(),
-  });
+  const response = await fetch(url.toString(), { headers: githubHeaders() });
 
   if (response.status === 403 || response.status === 429) {
     throw new Error(rateLimitMessage(response));
   }
   if (!response.ok) {
     throw new Error(
-      `GitHub responded with ${response.status} for topic "${slug}".`,
+      `GitHub responded with ${response.status} for topic "${spec.topic}".`,
     );
   }
 
@@ -120,66 +135,138 @@ async function fetchTopicRepos(slug: string): Promise<DiscoveredRepo[]> {
   return (payload.items ?? []).map(mapItem);
 }
 
-async function syncOneTopic(
+async function storeRepos(
   ctx: ActionCtx,
   userId: Id<"users">,
-  slug: string,
-): Promise<SyncResult> {
-  try {
-    const repos = await fetchTopicRepos(slug);
-    const saved = await ctx.runMutation(internal.feed.saveDiscoveredRepos, {
-      userId,
-      topicSlug: slug,
-      repos,
-    });
-    return { slug, added: saved.added, fetched: repos.length, error: null };
-  } catch (error) {
-    const message = errorMessage(error);
-    try {
-      await ctx.runMutation(internal.feed.markTopicError, {
-        userId,
-        topicSlug: slug,
-        message,
-      });
-    } catch {
-      // Recording the failure is best effort.
-    }
-    return { slug, added: 0, fetched: 0, error: message };
-  }
+  topicSlug: string,
+  repos: DiscoveredRepo[],
+): Promise<number> {
+  if (repos.length === 0) return 0;
+  const saved = await ctx.runMutation(internal.feed.saveDiscoveredRepos, {
+    userId,
+    topicSlug,
+    repos,
+  });
+  return saved.added;
 }
 
-/** Fetch repositories for a single topic (called right after a topic is added). */
+/**
+ * Pull the next batch of projects into the catalog. The queries come from the
+ * user's own topics, the topics of what they rated highly, and a broad pool, so
+ * the feed keeps going even when no topics have been followed.
+ */
+export const fetchMore = action({
+  args: { count: v.optional(v.number()) },
+  handler: async (ctx, { count }): Promise<FetchResult> => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) throw new Error("Sign in to load your feed.");
+
+    const { specs } = await ctx.runMutation(internal.feed.planSearches, {
+      userId,
+      count: count ?? 2,
+    });
+
+    let added = 0;
+    let fetched = 0;
+    const errors: { topic: string; message: string }[] = [];
+
+    for (const spec of specs) {
+      try {
+        const repos = await searchRepos(spec);
+        fetched += repos.length;
+        added += await storeRepos(ctx, userId, spec.topic, repos);
+      } catch (error) {
+        const message = errorMessage(error);
+        errors.push({ topic: spec.topic, message });
+        try {
+          await ctx.runMutation(internal.feed.markTopicError, {
+            userId,
+            topicSlug: spec.topic,
+            message,
+          });
+        } catch {
+          // Recording the failure is best effort.
+        }
+      }
+    }
+
+    return { added, fetched, errors };
+  },
+});
+
+/** Fetch one topic the user just followed, so it shows up right away. */
 export const syncTopic = action({
   args: { topic: v.string() },
-  handler: async (ctx, { topic }): Promise<SyncResult> => {
+  handler: async (ctx, { topic }): Promise<TopicSyncResult> => {
     const userId = await getAuthUserId(ctx);
-    if (!userId) throw new Error("Sign in to fetch projects.");
+    if (!userId) throw new Error("Sign in to follow topics.");
     const slug = normalizeTopic(topic);
     if (!slug) throw new Error('Enter a topic like "rust" or "devtools".');
-    return await syncOneTopic(ctx, userId, slug);
+
+    try {
+      const repos = await searchRepos({ topic: slug, sort: "stars", page: 1 });
+      const added = await storeRepos(ctx, userId, slug, repos);
+      return { slug, added, fetched: repos.length, error: null };
+    } catch (error) {
+      const message = errorMessage(error);
+      try {
+        await ctx.runMutation(internal.feed.markTopicError, {
+          userId,
+          topicSlug: slug,
+          message,
+        });
+      } catch {
+        // Recording the failure is best effort.
+      }
+      return { slug, added: 0, fetched: 0, error: message };
+    }
   },
 });
 
 /**
- * Refresh every topic the user follows. Runs one search per topic, so with
- * more than a handful of topics GitHub may rate limit the tail end; those
- * failures are reported per topic instead of failing the whole refresh.
+ * Read a README straight from GitHub's raw host (outside the API rate limit)
+ * and keep the screenshots it references. Cards render the result reactively.
  */
-export const syncAllTopics = action({
-  args: {},
-  handler: async (ctx): Promise<{ results: SyncResult[] }> => {
+export const enrich = action({
+  args: { repoIds: v.array(v.number()) },
+  handler: async (ctx, { repoIds }) => {
     const userId = await getAuthUserId(ctx);
-    if (!userId) throw new Error("Sign in to fetch projects.");
+    if (!userId) throw new Error("Sign in to load your feed.");
 
-    const slugs: string[] = await ctx.runQuery(
-      internal.feed.topicSlugsForUser,
-      { userId },
+    const pending: { repoId: number; fullName: string }[] = await ctx.runQuery(
+      internal.feed.projectsToEnrich,
+      { repoIds: repoIds.slice(0, MAX_ENRICH_PER_CALL) },
+    );
+    if (pending.length === 0) return { enriched: 0 };
+
+    const entries = await Promise.all(
+      pending.map(async (project) => {
+        const readme = await fetchReadme(project.fullName);
+        return {
+          repoId: project.repoId,
+          readme,
+          images: readme ? extractImages(readme, project.fullName) : [],
+        };
+      }),
     );
 
-    const results: SyncResult[] = [];
-    for (const slug of slugs) {
-      results.push(await syncOneTopic(ctx, userId, slug));
-    }
-    return { results };
+    await ctx.runMutation(internal.feed.saveEnrichment, { entries });
+    return { enriched: entries.length };
   },
 });
+
+async function fetchReadme(fullName: string): Promise<string | null> {
+  for (const url of readmeUrls(fullName).slice(0, README_ATTEMPTS)) {
+    try {
+      const response = await fetch(url, {
+        headers: { "User-Agent": USER_AGENT },
+      });
+      if (response.ok) return await response.text();
+      // Only a missing file is worth another guess at the file name.
+      if (response.status !== 404) return null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}

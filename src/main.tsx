@@ -11,6 +11,7 @@ import "./index.css";
 // Lazy load route components for better code splitting
 const Landing = lazy(() => import("./pages/Landing.tsx"));
 const AuthPage = lazy(() => import("./pages/Auth.tsx"));
+const Feed = lazy(() => import("./pages/Feed.tsx"));
 const Dashboard = lazy(() => import("./pages/Dashboard.tsx"));
 const Catalog = lazy(() => import("./pages/Catalog.tsx"));
 const NotFound = lazy(() => import("./pages/NotFound.tsx"));
@@ -122,14 +123,25 @@ createRoot(document.getElementById("root")!).render(
               <Route path="/" element={<Landing />} />
               <Route
                 path="/auth"
-                element={<AuthPage redirectAfterAuth="/dashboard" />}
+                element={<AuthPage redirectAfterAuth="/feed" />}
+              />
+              <Route
+                path="/feed"
+                element={
+                  <RequireAuth
+                    title="Sign in to open your feed"
+                    description="Your discovery feed is built from your own ratings."
+                  >
+                    <Feed />
+                  </RequireAuth>
+                }
               />
               <Route
                 path="/dashboard"
                 element={
                   <RequireAuth
                     title="Sign in to open your dashboard"
-                    description="Your topics, your feed and your ratings live here."
+                    description="Your totals, your library and the topics steering your feed live here."
                   >
                     <Dashboard />
                   </RequireAuth>
@@ -140,7 +152,7 @@ createRoot(document.getElementById("root")!).render(
                 element={
                   <RequireAuth
                     title="Sign in to browse the catalog"
-                    description="The catalog holds every project your topics have fetched so far."
+                    description="The catalog holds every project your feed has turned up so far."
                   >
                     <Catalog />
                   </RequireAuth>

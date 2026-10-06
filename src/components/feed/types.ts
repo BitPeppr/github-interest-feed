@@ -2,12 +2,21 @@ import type { FunctionReturnType } from "convex/server";
 import type { Doc } from "@/convex/_generated/dataModel";
 import type { api } from "@/convex/_generated/api";
 
-export type FeedData = NonNullable<FunctionReturnType<typeof api.feed.list>>;
+export type DiscoveryData = NonNullable<
+  FunctionReturnType<typeof api.feed.discovery>
+>;
+export type ProjectsData = NonNullable<
+  FunctionReturnType<typeof api.feed.projects>
+>;
+export type LibraryData = NonNullable<
+  FunctionReturnType<typeof api.feed.library>
+>;
+export type StatsData = NonNullable<FunctionReturnType<typeof api.feed.stats>>;
 export type CatalogData = NonNullable<
   FunctionReturnType<typeof api.feed.catalog>
 >;
 
-/** Projects are rendered from the same shape on both the dashboard and catalog. */
-export type Project = FeedData["items"][number] | CatalogData["items"][number];
-export type FeedItem = FeedData["items"][number];
+/** Every project row and card renders from this shape. */
+export type Project = ProjectsData["items"][number];
 export type TopicDoc = Doc<"topics">;
+export type LibraryKind = "saved" | "rated" | "hidden";

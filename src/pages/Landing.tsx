@@ -1,5 +1,6 @@
+import { useState } from "react";
 import { motion } from "framer-motion";
-import { GitFork, Star } from "lucide-react";
+import { Bookmark, GitFork, Star } from "lucide-react";
 import { Link } from "react-router";
 
 import { Wordmark } from "@/components/wordmark";
@@ -8,17 +9,21 @@ import { INTEREST_LABELS } from "@/components/feed/interest-scale";
 import { useAuth } from "@/hooks/use-auth";
 import { cn } from "@/lib/utils";
 
-const FEED_PATH = "/auth?returnTo=%2Fdashboard";
+const FEED_PATH = "/auth?returnTo=%2Ffeed";
 
-/** Static sample rows that show what the feed looks like. */
-const PREVIEW_ROWS = [
+/** Sample cards that show what the feed looks like, using real GitHub art. */
+const PREVIEW_CARDS = [
   {
     owner: "oven-sh",
     name: "bun",
-    description: "A fast all-in-one JavaScript runtime, bundler and test runner.",
+    description:
+      "A fast all-in-one JavaScript runtime, bundler, test runner and package manager.",
     language: "TypeScript",
     stars: "74k",
     forks: "2.1k",
+    heading: "What is Bun?",
+    readme:
+      "Bun is an all-in-one toolkit for JavaScript and TypeScript apps. It ships as a single executable called bun, and at its core is a fast runtime designed as a drop-in replacement for Node.js.",
     rating: 4,
   },
   {
@@ -29,15 +34,9 @@ const PREVIEW_ROWS = [
     language: "Rust",
     stars: "41k",
     forks: "1.1k",
-    rating: 5,
-  },
-  {
-    owner: "tldraw",
-    name: "tldraw",
-    description: "Infinite canvas SDK for building collaborative whiteboards.",
-    language: "TypeScript",
-    stars: "38k",
-    forks: "2.4k",
+    heading: "Highlights",
+    readme:
+      "One tool to replace pip, pip-tools, pipx, poetry, pyenv and virtualenv. Ten to a hundred times faster than pip, with a global cache and a resolver that does not fight you.",
     rating: null,
   },
 ];
@@ -45,48 +44,48 @@ const PREVIEW_ROWS = [
 const STEPS = [
   {
     number: "01",
-    title: "Pick your topics",
-    body: "Choose the GitHub topics you care about. Those topics are the entire definition of your feed.",
+    title: "Scroll the feed",
+    body: "A discovery feed drawn from all over GitHub and refreshed as you go. Following topics is optional — they only steer it.",
   },
   {
     number: "02",
-    title: "Fetch a batch",
-    body: "GitHub Interest Feed asks GitHub for the most-starred projects under those topics and files them in your catalog.",
+    title: "Rate what you see",
+    body: "Every card arrives with its description, screenshots and README. Give it a score from 1 to 5 in about a second.",
   },
   {
     number: "03",
-    title: "Rate each project",
-    body: "Say how interested you are, from 1 to 5. Every rating is stored against the project and stays yours.",
+    title: "Save the keepers",
+    body: "Bookmark the projects worth coming back to and dismiss the rest. Your ratings shape what turns up next.",
   },
 ];
 
 const INSIDE = [
   {
-    title: "Your dashboard",
-    body: "Your topics, your feed, and a running total of what you have rated — all on one quiet page.",
+    title: "Your feed",
+    body: "One card at a time: screenshots, the README, and a rating. Scroll past anything and it never returns.",
   },
   {
     title: "The catalog",
-    body: "Every project fetched so far, searchable by name, language or topic and filterable down to the interesting few.",
+    body: "Everything the feed has turned up so far, searchable by name, language or topic.",
   },
   {
-    title: "Your ratings",
-    body: "A 1 – 5 interest score per project. Ratings are private to your account and are the only signal this feed needs.",
+    title: "Your dashboard",
+    body: "Your totals, the topics nudging the feed, and the projects you saved, rated or hid.",
   },
 ];
 
 const IN_V1 = [
-  "Sign up or log in with your email, then rate straight away",
-  "A feed defined only by the topics you pick",
-  "A catalog you can browse, search and filter",
-  "A 1 – 5 interest rating on every project, with totals on your dashboard",
+  "Sign up or log in with an email code, then start rating",
+  "An endless feed of GitHub projects with their READMEs and screenshots",
+  "A 1 – 5 interest rating, plus save and dismiss on every card",
+  "A catalog you can browse and search, and a dashboard for your library",
 ];
 
 const LATER = [
-  "Recommendations learned from your ratings",
-  "Following other people or sharing lists",
+  "Following other people or sharing collections",
   "Comments, likes and notifications",
-  "Anything that needs a feed algorithm you cannot read",
+  "A ranking you cannot see the reasons for",
+  "Sharing one account between several people",
 ];
 
 function PreviewScale({ value }: { value: number | null }) {
@@ -119,6 +118,78 @@ function PreviewScale({ value }: { value: number | null }) {
   );
 }
 
+function PreviewCard({ card }: { card: (typeof PREVIEW_CARDS)[number] }) {
+  const [mediaBroken, setMediaBroken] = useState(false);
+
+  return (
+    <article className="rounded-xl border border-border bg-card">
+      <header className="flex items-start gap-3 px-5 pt-5">
+        <img
+          src={`https://github.com/${card.owner}.png?size=80`}
+          alt=""
+          loading="lazy"
+          className="size-9 shrink-0 rounded-full border border-border"
+        />
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-[15px] font-medium tracking-[-0.01em]">
+            <span className="text-muted-foreground">{card.owner}</span>
+            <span className="text-muted-foreground/50"> / </span>
+            {card.name}
+          </p>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            {card.language} · {card.stars} stars
+          </p>
+        </div>
+      </header>
+
+      {!mediaBroken && (
+        <div className="mt-4 border-y border-border bg-muted/30">
+          <img
+            src={`https://opengraph.githubassets.com/1/${card.owner}/${card.name}`}
+            alt=""
+            loading="lazy"
+            onError={() => setMediaBroken(true)}
+            className="h-40 w-full object-cover object-top"
+          />
+        </div>
+      )}
+
+      <div className="px-5 pt-4">
+        <p className="text-sm leading-relaxed text-foreground/90">
+          {card.description}
+        </p>
+        <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-muted-foreground">
+          <span className="inline-flex items-center gap-1 tabular-nums">
+            <Star className="size-3.5" aria-hidden />
+            {card.stars}
+          </span>
+          <span className="inline-flex items-center gap-1 tabular-nums">
+            <GitFork className="size-3.5" aria-hidden />
+            {card.forks}
+          </span>
+        </div>
+
+        <div className="mt-5">
+          <h3 className="text-base font-semibold tracking-[-0.01em] text-foreground">
+            {card.heading}
+          </h3>
+          <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+            {card.readme}
+          </p>
+        </div>
+      </div>
+
+      <footer className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-b-xl border-t border-border bg-background/90 px-5 py-3">
+        <PreviewScale value={card.rating} />
+        <span className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground">
+          <Bookmark className="size-3.5" />
+          {card.rating ? "Saved" : "Save"}
+        </span>
+      </footer>
+    </article>
+  );
+}
+
 function MicroLabel({ children }: { children: React.ReactNode }) {
   return (
     <p className="text-[11px] tracking-[0.16em] text-muted-foreground uppercase">
@@ -129,8 +200,8 @@ function MicroLabel({ children }: { children: React.ReactNode }) {
 
 export default function Landing() {
   const { isAuthenticated } = useAuth();
-  const primaryHref = isAuthenticated ? "/dashboard" : FEED_PATH;
-  const primaryLabel = isAuthenticated ? "Go to your dashboard" : "Create your feed";
+  const primaryHref = isAuthenticated ? "/feed" : FEED_PATH;
+  const primaryLabel = isAuthenticated ? "Open your feed" : "Create your account";
 
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -168,7 +239,7 @@ export default function Landing() {
             )}
             <Button size="sm" asChild>
               <Link to={primaryHref}>
-                {isAuthenticated ? "Dashboard" : "Create your feed"}
+                {isAuthenticated ? "Your feed" : "Create your account"}
               </Link>
             </Button>
           </nav>
@@ -189,9 +260,10 @@ export default function Landing() {
               A GitHub feed you tune by hand.
             </h1>
             <p className="mt-6 max-w-xl text-base leading-relaxed text-muted-foreground">
-              GitHub Interest Feed pulls projects from the topics you choose and
-              asks one question about each: how interested are you? No timeline
-              to keep up with, and no algorithm you cannot read.
+              Rate projects from across GitHub and the feed answers back: save
+              the ones worth keeping, dismiss the noise, and keep scrolling.
+              There is no timeline to keep up with and no algorithm you cannot
+              read.
             </p>
             <div className="mt-8 flex flex-wrap items-center gap-3">
               <Button size="lg" asChild>
@@ -211,58 +283,22 @@ export default function Landing() {
             initial={{ opacity: 0, y: 12 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.6, delay: 0.15, ease: "easeOut" }}
-            className="mt-16 rounded-xl border border-border sm:mt-20"
+            className="mt-16 sm:mt-20"
           >
-            <div className="flex items-center justify-between border-b border-border px-5 py-3">
+            <div className="mb-4 flex items-center justify-between">
               <MicroLabel>Your feed</MicroLabel>
               <span className="text-[11px] text-muted-foreground tabular-nums">
-                3 of 40 · topics: rust, typescript
+                24 projects waiting · 2 rated
               </span>
             </div>
-            <ul className="divide-y divide-border">
-              {PREVIEW_ROWS.map((row) => (
-                <li
-                  key={row.name}
-                  className="flex flex-col gap-4 px-5 py-5 sm:flex-row sm:items-start sm:justify-between sm:gap-10"
-                >
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-[15px] font-medium tracking-[-0.01em]">
-                      <span className="text-muted-foreground">{row.owner}</span>
-                      <span className="text-muted-foreground/50"> / </span>
-                      {row.name}
-                    </p>
-                    <p className="mt-1.5 line-clamp-2 text-sm leading-relaxed text-muted-foreground">
-                      {row.description}
-                    </p>
-                    <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-muted-foreground">
-                      <span className="inline-flex items-center gap-1.5">
-                        <span
-                          aria-hidden
-                          className="size-1.5 rounded-full bg-foreground/50"
-                        />
-                        {row.language}
-                      </span>
-                      <span className="inline-flex items-center gap-1 tabular-nums">
-                        <Star className="size-3.5" aria-hidden />
-                        {row.stars}
-                      </span>
-                      <span className="inline-flex items-center gap-1 tabular-nums">
-                        <GitFork className="size-3.5" aria-hidden />
-                        {row.forks}
-                      </span>
-                    </div>
-                  </div>
-                  <div className="shrink-0">
-                    <PreviewScale value={row.rating} />
-                  </div>
-                </li>
+            <div className="mx-auto max-w-2xl space-y-6">
+              {PREVIEW_CARDS.map((card) => (
+                <PreviewCard key={card.name} card={card} />
               ))}
-            </ul>
-            <div className="border-t border-border px-5 py-3">
-              <p className="text-[11px] text-muted-foreground">
-                Rate a page in a minute. That is the whole loop.
-              </p>
             </div>
+            <p className="mt-6 text-center text-[11px] text-muted-foreground">
+              Rate a card, scroll to the next. That is the whole loop.
+            </p>
           </motion.div>
         </section>
 
@@ -324,8 +360,8 @@ export default function Landing() {
                 Small on purpose.
               </h2>
               <p className="mt-4 text-sm leading-relaxed text-muted-foreground">
-                Version 1 does one thing well: it shows you a GitHub feed and
-                lets you rate it.
+                Version 1 does one thing well: it shows you projects from GitHub
+                and lets you rate them.
               </p>
               <ul className="mt-8 divide-y divide-border border-y border-border">
                 {IN_V1.map((item) => (
@@ -374,8 +410,8 @@ export default function Landing() {
               Your next favourite project is one rating away.
             </h2>
             <p className="mx-auto mt-4 max-w-md text-sm leading-relaxed text-muted-foreground">
-              Pick two topics, rate ten projects, and your feed starts to look
-              like something you would have chosen yourself.
+              Rate ten projects and your feed starts to look like something you
+              would have chosen yourself.
             </p>
             <div className="mt-8 flex justify-center">
               <Button size="lg" asChild>
@@ -390,7 +426,7 @@ export default function Landing() {
         <div className="mx-auto flex w-full max-w-5xl flex-col gap-3 px-6 py-8 sm:flex-row sm:items-center sm:justify-between">
           <Wordmark />
           <p className="text-[11px] tracking-[0.12em] text-muted-foreground uppercase">
-            Version 1 · Topics, catalog and ratings
+            Version 1 · Feed, catalog and dashboard
           </p>
         </div>
       </footer>

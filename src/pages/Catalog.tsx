@@ -90,9 +90,9 @@ export default function Catalog() {
             Catalog
           </h1>
           <p className="mt-1.5 text-sm leading-relaxed text-muted-foreground">
-            Every project your topics have fetched so far — including the ones
-            no longer in your feed. Search it, filter it, and rate what you
-            find; ratings show up on your dashboard.
+            Everything your feed has turned up so far, minus the projects you
+            hid. Search it, filter it, and rate what you find — ratings show up
+            on your dashboard.
           </p>
         </div>
 
@@ -198,11 +198,11 @@ export default function Catalog() {
           <div className="mt-6 rounded-lg border border-dashed border-border px-6 py-12 text-center">
             <p className="text-sm font-medium">Your catalog is empty</p>
             <p className="mx-auto mt-2 max-w-sm text-sm leading-relaxed text-muted-foreground">
-              Add a couple of topics on your dashboard and fetch a batch.
-              Everything GitHub returns lands here, ready to search and rate.
+              Open your feed and scroll a little — every project it turns up
+              lands here, ready to search and rate.
             </p>
             <Button className="mt-5 gap-2" asChild>
-              <Link to="/dashboard">Go to your dashboard</Link>
+              <Link to="/feed">Open your feed</Link>
             </Button>
           </div>
         ) : (
