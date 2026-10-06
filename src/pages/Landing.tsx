@@ -5,6 +5,7 @@ import { Link } from "react-router";
 import { Wordmark } from "@/components/wordmark";
 import { Button } from "@/components/ui/button";
 import { INTEREST_LABELS } from "@/components/feed/interest-scale";
+import { useAuth } from "@/hooks/use-auth";
 import { cn } from "@/lib/utils";
 
 const FEED_PATH = "/auth?returnTo=%2Fdashboard";
@@ -44,33 +45,48 @@ const PREVIEW_ROWS = [
 const STEPS = [
   {
     number: "01",
-    title: "Pick topics",
+    title: "Pick your topics",
     body: "Choose the GitHub topics you care about. Those topics are the entire definition of your feed.",
   },
   {
     number: "02",
     title: "Fetch a batch",
-    body: "Sift asks GitHub for the most-starred projects under those topics and caches them for you.",
+    body: "GitHub Interest Feed asks GitHub for the most-starred projects under those topics and files them in your catalog.",
   },
   {
     number: "03",
-    title: "Rate 1 – 5",
-    body: "Say how interested you are in each project. Ratings are stored per project and stay yours.",
+    title: "Rate each project",
+    body: "Say how interested you are, from 1 to 5. Every rating is stored against the project and stays yours.",
+  },
+];
+
+const INSIDE = [
+  {
+    title: "Your dashboard",
+    body: "Your topics, your feed, and a running total of what you have rated — all on one quiet page.",
+  },
+  {
+    title: "The catalog",
+    body: "Every project fetched so far, searchable by name, language or topic and filterable down to the interesting few.",
+  },
+  {
+    title: "Your ratings",
+    body: "A 1 – 5 interest score per project. Ratings are private to your account and are the only signal this feed needs.",
   },
 ];
 
 const IN_V1 = [
-  "A feed defined only by topics you pick",
-  "Project cards ranked by stars, freshness or when you first saw them",
-  "A 1 – 5 interest rating on every project",
-  "A switch between unrated and already rated",
+  "Sign up or log in with your email, then rate straight away",
+  "A feed defined only by the topics you pick",
+  "A catalog you can browse, search and filter",
+  "A 1 – 5 interest rating on every project, with totals on your dashboard",
 ];
 
 const LATER = [
   "Recommendations learned from your ratings",
-  "Following people or sharing lists",
+  "Following other people or sharing lists",
   "Comments, likes and notifications",
-  "Anything that needs a feed algorithm you can't read",
+  "Anything that needs a feed algorithm you cannot read",
 ];
 
 function PreviewScale({ value }: { value: number | null }) {
@@ -112,12 +128,26 @@ function MicroLabel({ children }: { children: React.ReactNode }) {
 }
 
 export default function Landing() {
+  const { isAuthenticated } = useAuth();
+  const primaryHref = isAuthenticated ? "/dashboard" : FEED_PATH;
+  const primaryLabel = isAuthenticated ? "Go to your dashboard" : "Create your feed";
+
   return (
     <div className="min-h-screen bg-background text-foreground">
       <header className="sticky top-0 z-30 border-b border-border bg-background/85 backdrop-blur-sm">
-        <div className="mx-auto flex h-14 w-full max-w-5xl items-center justify-between px-6">
-          <Wordmark />
+        <div className="mx-auto flex h-14 w-full max-w-5xl items-center justify-between gap-4 px-6">
+          <Link to="/" aria-label="GitHub Interest Feed home">
+            <Wordmark nameClassName="hidden sm:inline" />
+          </Link>
           <nav className="flex items-center gap-1.5">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="hidden text-muted-foreground hover:text-foreground md:inline-flex"
+              asChild
+            >
+              <Link to="/catalog">Catalog</Link>
+            </Button>
             <Button
               variant="ghost"
               size="sm"
@@ -126,11 +156,20 @@ export default function Landing() {
             >
               <a href="#how">How it works</a>
             </Button>
-            <Button variant="ghost" size="sm" className="text-muted-foreground hover:text-foreground" asChild>
-              <Link to={FEED_PATH}>Sign in</Link>
-            </Button>
-            <Button size="sm" className="gap-1.5" asChild>
-              <Link to={FEED_PATH}>Start your feed</Link>
+            {!isAuthenticated && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-muted-foreground hover:text-foreground"
+                asChild
+              >
+                <Link to={FEED_PATH}>Sign in</Link>
+              </Button>
+            )}
+            <Button size="sm" asChild>
+              <Link to={primaryHref}>
+                {isAuthenticated ? "Dashboard" : "Create your feed"}
+              </Link>
             </Button>
           </nav>
         </div>
@@ -145,25 +184,25 @@ export default function Landing() {
             transition={{ duration: 0.5, ease: "easeOut" }}
             className="max-w-2xl"
           >
-            <MicroLabel>GitHub interest feed · version 1</MicroLabel>
+            <MicroLabel>A personal GitHub feed</MicroLabel>
             <h1 className="mt-6 text-4xl font-semibold tracking-[-0.03em] text-balance sm:text-5xl lg:text-6xl">
-              Rate a few projects. Get a feed that&apos;s actually yours.
+              A GitHub feed you tune by hand.
             </h1>
             <p className="mt-6 max-w-xl text-base leading-relaxed text-muted-foreground">
-              Sift pulls projects from the GitHub topics you choose and asks you
-              one question about each: how interested are you? No timeline, no
-              followers, no algorithm you can&apos;t read.
+              GitHub Interest Feed pulls projects from the topics you choose and
+              asks one question about each: how interested are you? No timeline
+              to keep up with, and no algorithm you cannot read.
             </p>
             <div className="mt-8 flex flex-wrap items-center gap-3">
-              <Button size="lg" className="gap-2" asChild>
-                <Link to={FEED_PATH}>Start your feed</Link>
+              <Button size="lg" asChild>
+                <Link to={primaryHref}>{primaryLabel}</Link>
               </Button>
               <Button size="lg" variant="outline" asChild>
                 <a href="#how">See how it works</a>
               </Button>
             </div>
             <p className="mt-5 text-xs text-muted-foreground">
-              Email or guest sign-in · Built for one person: you
+              Sign up or log in with an email code · Built for one person: you
             </p>
           </motion.div>
 
@@ -177,7 +216,7 @@ export default function Landing() {
             <div className="flex items-center justify-between border-b border-border px-5 py-3">
               <MicroLabel>Your feed</MicroLabel>
               <span className="text-[11px] text-muted-foreground tabular-nums">
-                3 of 40 · topics: typescript, rust
+                3 of 40 · topics: rust, typescript
               </span>
             </div>
             <ul className="divide-y divide-border">
@@ -221,17 +260,14 @@ export default function Landing() {
             </ul>
             <div className="border-t border-border px-5 py-3">
               <p className="text-[11px] text-muted-foreground">
-                Rate a page in a minute. That&apos;s the whole loop.
+                Rate a page in a minute. That is the whole loop.
               </p>
             </div>
           </motion.div>
         </section>
 
         {/* How it works */}
-        <section
-          id="how"
-          className="border-t border-border scroll-mt-14"
-        >
+        <section id="how" className="border-t border-border scroll-mt-14">
           <div className="mx-auto w-full max-w-5xl px-6 py-20 sm:py-24">
             <MicroLabel>How it works</MicroLabel>
             <h2 className="mt-5 max-w-xl text-2xl font-semibold tracking-[-0.02em] text-balance sm:text-3xl">
@@ -256,6 +292,29 @@ export default function Landing() {
           </div>
         </section>
 
+        {/* What is inside */}
+        <section className="border-t border-border">
+          <div className="mx-auto w-full max-w-5xl px-6 py-20 sm:py-24">
+            <MicroLabel>What is inside</MicroLabel>
+            <h2 className="mt-5 max-w-xl text-2xl font-semibold tracking-[-0.02em] text-balance sm:text-3xl">
+              Three pages, one loop.
+            </h2>
+
+            <div className="mt-12 grid gap-px overflow-hidden rounded-xl border border-border bg-border sm:grid-cols-3">
+              {INSIDE.map((item) => (
+                <div key={item.title} className="bg-background p-6 sm:p-7">
+                  <h3 className="text-base font-medium tracking-[-0.01em]">
+                    {item.title}
+                  </h3>
+                  <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+                    {item.body}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+
         {/* Scope */}
         <section className="border-t border-border">
           <div className="mx-auto grid w-full max-w-5xl gap-12 px-6 py-20 sm:py-24 lg:grid-cols-2 lg:gap-20">
@@ -265,8 +324,8 @@ export default function Landing() {
                 Small on purpose.
               </h2>
               <p className="mt-4 text-sm leading-relaxed text-muted-foreground">
-                Version 1 does exactly one thing well: it shows you a GitHub feed
-                and lets you rate it.
+                Version 1 does one thing well: it shows you a GitHub feed and
+                lets you rate it.
               </p>
               <ul className="mt-8 divide-y divide-border border-y border-border">
                 {IN_V1.map((item) => (
@@ -301,26 +360,26 @@ export default function Landing() {
                 ))}
               </ul>
               <p className="mt-6 text-xs leading-relaxed text-muted-foreground">
-                Ratings come first because they are the only signal the feed needs
-                later.
+                Ratings come first because they are the only signal the feed
+                needs later.
               </p>
             </div>
           </div>
         </section>
 
-        {/* Closing CTA */}
+        {/* Closing call to action */}
         <section className="border-t border-border">
           <div className="mx-auto w-full max-w-5xl px-6 py-20 text-center sm:py-28">
             <h2 className="mx-auto max-w-xl text-3xl font-semibold tracking-[-0.025em] text-balance">
               Your next favourite project is one rating away.
             </h2>
             <p className="mx-auto mt-4 max-w-md text-sm leading-relaxed text-muted-foreground">
-              Pick two topics, rate ten projects, and the feed starts to look
-              like something you would have picked yourself.
+              Pick two topics, rate ten projects, and your feed starts to look
+              like something you would have chosen yourself.
             </p>
             <div className="mt-8 flex justify-center">
-              <Button size="lg" className="gap-2" asChild>
-                <Link to={FEED_PATH}>Start your feed</Link>
+              <Button size="lg" asChild>
+                <Link to={primaryHref}>{primaryLabel}</Link>
               </Button>
             </div>
           </div>
@@ -331,7 +390,7 @@ export default function Landing() {
         <div className="mx-auto flex w-full max-w-5xl flex-col gap-3 px-6 py-8 sm:flex-row sm:items-center sm:justify-between">
           <Wordmark />
           <p className="text-[11px] tracking-[0.12em] text-muted-foreground uppercase">
-            Version 1 · Topics &amp; ratings
+            Version 1 · Topics, catalog and ratings
           </p>
         </div>
       </footer>

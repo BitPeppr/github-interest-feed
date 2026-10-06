@@ -1,13 +1,14 @@
 import { useCallback, useMemo, useState } from "react";
-import { useNavigate } from "react-router";
 import { useAction, useMutation, useQuery } from "convex/react";
-import { LogOut, Plus } from "lucide-react";
+import { motion } from "framer-motion";
+import { Plus } from "lucide-react";
 import { toast } from "sonner";
 
+import { AppHeader } from "@/components/app-header";
+import { Loading } from "@/components/feed/loading";
 import { RepoRow } from "@/components/feed/repo-row";
 import { TopicsPanel } from "@/components/feed/topics-panel";
 import type { FeedItem, TopicDoc } from "@/components/feed/types";
-import { Wordmark } from "@/components/wordmark";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -17,11 +18,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { api } from "@/convex/_generated/api";
-import { useAuth } from "@/hooks/use-auth";
+import { useRatings } from "@/hooks/use-ratings";
 import { errorText } from "@/lib/format";
 import { SUGGESTED_TOPICS } from "@/lib/topics";
 
@@ -34,26 +34,6 @@ const SORT_LABELS: Record<SortKey, string> = {
   added: "Recently added",
 };
 
-function FeedSkeleton() {
-  return (
-    <ul className="divide-y divide-border">
-      {[0, 1, 2, 3].map((index) => (
-        <li
-          key={index}
-          className="flex items-start justify-between gap-10 py-5"
-        >
-          <div className="flex-1 space-y-3">
-            <Skeleton className="h-4 w-48" />
-            <Skeleton className="h-3 w-full max-w-md" />
-            <Skeleton className="h-3 w-40" />
-          </div>
-          <Skeleton className="h-5 w-36 rounded-full" />
-        </li>
-      ))}
-    </ul>
-  );
-}
-
 function MicroLabel({ children }: { children: React.ReactNode }) {
   return (
     <p className="text-[11px] tracking-[0.16em] text-muted-foreground uppercase">
@@ -63,18 +43,14 @@ function MicroLabel({ children }: { children: React.ReactNode }) {
 }
 
 export default function Dashboard() {
-  const { user, signOut } = useAuth();
-  const navigate = useNavigate();
-
   const topics = useQuery(api.feed.listTopics);
   const data = useQuery(api.feed.list);
 
   const addTopic = useMutation(api.feed.addTopic);
   const removeTopic = useMutation(api.feed.removeTopic);
-  const setRating = useMutation(api.feed.setRating);
-  const clearRating = useMutation(api.feed.clearRating);
   const syncTopic = useAction(api.github.syncTopic);
   const syncAllTopics = useAction(api.github.syncAllTopics);
+  const { rate, clear } = useRatings();
 
   const [filter, setFilter] = useState<FilterKey>("all");
   const [sort, setSort] = useState<SortKey>("active");
@@ -110,7 +86,7 @@ export default function Dashboard() {
         const result = await addTopic({ topic: raw });
         slug = result.slug;
         if (!result.created) {
-          toast(`Already following “${slug}”.`);
+          toast(`You already follow “${slug}”.`);
           return;
         }
       } catch (error) {
@@ -156,29 +132,6 @@ export default function Dashboard() {
     [removeTopic],
   );
 
-  const handleRate = useCallback(
-    (repoId: number, value: number) => {
-      void setRating({ repoId, value }).catch((error) =>
-        toast.error(errorText(error)),
-      );
-    },
-    [setRating],
-  );
-
-  const handleClear = useCallback(
-    (repoId: number) => {
-      void clearRating({ repoId }).catch((error) =>
-        toast.error(errorText(error)),
-      );
-    },
-    [clearRating],
-  );
-
-  const handleSignOut = async () => {
-    await signOut();
-    navigate("/");
-  };
-
   const items = useMemo<FeedItem[]>(() => {
     const all = data?.items ?? [];
     const filtered =
@@ -198,51 +151,52 @@ export default function Dashboard() {
     });
   }, [data, filter, sort]);
 
+  const ratedItems = useMemo(
+    () => (data?.items ?? []).filter((item) => item.rating !== null),
+    [data],
+  );
+
   const isLoading = topics === undefined || data === undefined;
   const topicCount = topics?.length ?? 0;
-  const ratedCount = data?.rated ?? 0;
+
+  const averageInterest =
+    ratedItems.length > 0
+      ? ratedItems.reduce((sum, item) => sum + (item.rating ?? 0), 0) /
+        ratedItems.length
+      : null;
+
+  const stats = [
+    { label: "In your feed", value: String(data?.total ?? 0) },
+    { label: "Topics", value: String(topicCount) },
+    { label: "Rated", value: String(ratedItems.length) },
+    {
+      label: "Average interest",
+      value: averageInterest === null ? "—" : averageInterest.toFixed(1),
+    },
+  ];
 
   return (
     <div className="min-h-screen bg-background text-foreground">
-      <header className="sticky top-0 z-30 border-b border-border bg-background/85 backdrop-blur-sm">
-        <div className="mx-auto flex h-14 w-full max-w-6xl items-center justify-between px-6">
-          <div className="flex items-center gap-3">
-            <Wordmark />
-            <span className="hidden h-4 w-px bg-border sm:block" />
-            <span className="hidden text-[11px] tracking-[0.16em] text-muted-foreground uppercase sm:block">
-              Interest feed
-            </span>
-          </div>
-          <div className="flex items-center gap-3">
-            <span className="hidden max-w-[220px] truncate text-xs text-muted-foreground sm:block">
-              {user?.email ?? "Guest session"}
-            </span>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="gap-2 text-muted-foreground hover:text-foreground"
-              onClick={() => void handleSignOut()}
-            >
-              <LogOut className="size-3.5" />
-              Sign out
-            </Button>
-          </div>
-        </div>
-      </header>
+      <AppHeader active="dashboard" />
 
-      <main className="mx-auto w-full max-w-6xl px-6 py-10 lg:py-14">
+      <motion.main
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ duration: 0.3, ease: "easeOut" }}
+        className="mx-auto w-full max-w-6xl px-6 py-10 lg:py-12"
+      >
         {isLoading ? (
-          <FeedSkeleton />
+          <Loading label="Loading your feed…" />
         ) : topicCount === 0 ? (
           <section className="mx-auto max-w-xl py-10 text-center">
             <MicroLabel>Version 1</MicroLabel>
             <h1 className="mt-4 text-3xl font-semibold tracking-[-0.025em] text-balance">
-              Pick a few topics. Rate what shows up.
+              Start with a topic or two.
             </h1>
             <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
-              Your feed only contains projects from the topics you choose here —
-              nothing scraped, nothing social. Rate a project 1 to 5 and that
-              signal stays yours.
+              Your feed only contains projects from the topics you choose here.
+              Add one and GitHub Interest Feed fetches the most-starred projects
+              under it, ready for you to rate.
             </p>
 
             <form onSubmit={submitDraft} className="mt-8 flex gap-2">
@@ -283,115 +237,140 @@ export default function Dashboard() {
             </div>
           </section>
         ) : (
-          <div className="grid gap-10 lg:grid-cols-[236px_minmax(0,1fr)] lg:gap-14">
-            <TopicsPanel
-              topics={topics ?? []}
-              counts={data?.counts ?? {}}
-              onAdd={handleAddTopic}
-              onRemove={handleRemoveTopic}
-              onRefresh={() => void refreshAll()}
-              isRefreshing={isRefreshing}
-            />
-
-            <section>
-              <div className="flex flex-wrap items-end justify-between gap-6 border-b border-border pb-4">
-                <div>
-                  <h1 className="text-2xl font-semibold tracking-[-0.02em]">
-                    Your feed
-                  </h1>
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    {data?.total ?? 0} project
-                    {(data?.total ?? 0) === 1 ? "" : "s"} from {topicCount} topic
-                    {topicCount === 1 ? "" : "s"}
-                    {ratedCount > 0 ? ` · ${ratedCount} rated` : ""}
-                  </p>
-                </div>
-
-                <div className="flex flex-wrap items-center gap-3">
-                  <ToggleGroup
-                    type="single"
-                    variant="outline"
-                    size="sm"
-                    value={filter}
-                    onValueChange={(value) => {
-                      if (value) setFilter(value as FilterKey);
-                    }}
-                  >
-                    <ToggleGroupItem value="all">All</ToggleGroupItem>
-                    <ToggleGroupItem value="unrated">Unrated</ToggleGroupItem>
-                    <ToggleGroupItem value="rated">Rated</ToggleGroupItem>
-                  </ToggleGroup>
-
-                  {filter !== "rated" && (
-                    <Select
-                      value={sort}
-                      onValueChange={(value) => setSort(value as SortKey)}
-                    >
-                      <SelectTrigger
-                        size="sm"
-                        className="w-[168px] text-xs"
-                        aria-label="Sort feed"
-                      >
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {(Object.keys(SORT_LABELS) as SortKey[]).map((key) => (
-                          <SelectItem key={key} value={key}>
-                            {SORT_LABELS[key]}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  )}
-                </div>
-              </div>
-
-              <p className="pt-4 pb-1 text-[11px] tracking-[0.12em] text-muted-foreground uppercase">
-                Rate 1 – 5 · 1 not for me · 5 love it
-              </p>
-
-              {data && data.total === 0 ? (
-                isRefreshing ? (
-                  <FeedSkeleton />
-                ) : (
-                  <div className="mt-4 rounded-lg border border-dashed border-border px-6 py-10 text-center">
-                    <p className="text-sm font-medium">
-                      Nothing fetched yet
-                    </p>
-                    <p className="mx-auto mt-2 max-w-sm text-sm text-muted-foreground">
-                      Nothing has been fetched for these topics yet. Fetch now
-                      to pull in the first batch of projects.
-                    </p>
-                    <Button
-                      className="mt-5 gap-2"
-                      onClick={() => void refreshAll()}
-                    >
-                      Fetch projects
-                    </Button>
-                  </div>
-                )
-              ) : items.length === 0 ? (
-                <p className="py-12 text-center text-sm text-muted-foreground">
-                  {filter === "unrated"
-                    ? "Every project in your feed has a rating. Add a topic for more."
-                    : "No rated projects yet. Rate something and it lands here."}
+          <>
+            <div className="flex flex-wrap items-end justify-between gap-4">
+              <div>
+                <h1 className="text-2xl font-semibold tracking-[-0.02em]">
+                  Your dashboard
+                </h1>
+                <p className="mt-1.5 text-sm text-muted-foreground">
+                  Your topics, your feed, and every rating you have given.
                 </p>
-              ) : (
-                <ul className="divide-y divide-border">
-                  {items.map((item) => (
-                    <RepoRow
-                      key={item.repoId}
-                      item={item}
-                      onRate={handleRate}
-                      onClear={handleClear}
-                    />
-                  ))}
-                </ul>
-              )}
-            </section>
-          </div>
+              </div>
+            </div>
+
+            <dl className="mt-8 grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-border bg-border sm:grid-cols-4">
+              {stats.map((stat) => (
+                <div key={stat.label} className="bg-background px-5 py-4">
+                  <dt className="text-[11px] tracking-[0.14em] text-muted-foreground uppercase">
+                    {stat.label}
+                  </dt>
+                  <dd className="mt-2 text-2xl font-semibold tracking-[-0.02em] tabular-nums">
+                    {stat.value}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+
+            <div className="mt-10 grid gap-10 lg:grid-cols-[236px_minmax(0,1fr)] lg:gap-14">
+              <TopicsPanel
+                topics={topics ?? []}
+                counts={data?.counts ?? {}}
+                onAdd={handleAddTopic}
+                onRemove={handleRemoveTopic}
+                onRefresh={() => void refreshAll()}
+                isRefreshing={isRefreshing}
+              />
+
+              <section>
+                <div className="flex flex-wrap items-end justify-between gap-6 border-b border-border pb-4">
+                  <div>
+                    <h2 className="text-lg font-semibold tracking-[-0.015em]">
+                      Your feed
+                    </h2>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      {data?.total ?? 0} project
+                      {(data?.total ?? 0) === 1 ? "" : "s"} from {topicCount}{" "}
+                      topic{topicCount === 1 ? "" : "s"} · {ratedItems.length}{" "}
+                      rated
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-3">
+                    <ToggleGroup
+                      type="single"
+                      variant="outline"
+                      size="sm"
+                      value={filter}
+                      onValueChange={(value) => {
+                        if (value) setFilter(value as FilterKey);
+                      }}
+                    >
+                      <ToggleGroupItem value="all">All</ToggleGroupItem>
+                      <ToggleGroupItem value="unrated">Unrated</ToggleGroupItem>
+                      <ToggleGroupItem value="rated">Rated</ToggleGroupItem>
+                    </ToggleGroup>
+
+                    {filter !== "rated" && (
+                      <Select
+                        value={sort}
+                        onValueChange={(value) => setSort(value as SortKey)}
+                      >
+                        <SelectTrigger
+                          size="sm"
+                          className="w-[168px] text-xs"
+                          aria-label="Sort feed"
+                        >
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {(Object.keys(SORT_LABELS) as SortKey[]).map((key) => (
+                            <SelectItem key={key} value={key}>
+                              {SORT_LABELS[key]}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    )}
+                  </div>
+                </div>
+
+                <p className="pt-4 pb-1 text-[11px] tracking-[0.12em] text-muted-foreground uppercase">
+                  Rate 1 – 5 · 1 not for me · 5 love it
+                </p>
+
+                {data && data.total === 0 ? (
+                  isRefreshing ? (
+                    <Loading label="Fetching projects from GitHub…" />
+                  ) : (
+                    <div className="mt-4 rounded-lg border border-dashed border-border px-6 py-10 text-center">
+                      <p className="text-sm font-medium">Nothing fetched yet</p>
+                      <p className="mx-auto mt-2 max-w-sm text-sm leading-relaxed text-muted-foreground">
+                        Fetch now and GitHub returns the most-starred projects
+                        under your topics. Everything it returns stays in your
+                        catalog.
+                      </p>
+                      <Button
+                        className="mt-5 gap-2"
+                        onClick={() => void refreshAll()}
+                      >
+                        Fetch projects
+                      </Button>
+                    </div>
+                  )
+                ) : items.length === 0 ? (
+                  <p className="py-12 text-center text-sm text-muted-foreground">
+                    {filter === "unrated"
+                      ? "Every project in your feed has a rating. Add another topic for more."
+                      : "No rated projects yet. Rate something and it lands here."}
+                  </p>
+                ) : (
+                  <ul className="divide-y divide-border">
+                    {items.map((item) => (
+                      <RepoRow
+                        key={item.repoId}
+                        item={item}
+                        onRate={rate}
+                        onClear={clear}
+                      />
+                    ))}
+                  </ul>
+                )}
+              </section>
+            </div>
+          </>
         )}
-      </main>
+      </motion.main>
     </div>
   );
 }

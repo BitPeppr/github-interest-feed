@@ -1,10 +1,12 @@
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { Infer, v } from "convex/values";
+import type { Doc, Id } from "./_generated/dataModel";
 import {
   internalMutation,
   internalQuery,
   mutation,
   query,
+  type QueryCtx,
 } from "./_generated/server";
 
 /**
@@ -56,9 +58,60 @@ export const listTopics = query({
   },
 });
 
+/** The shape every project row is rendered from, rating included. */
+function toProject(repo: Doc<"repos">, rating: number | null) {
+  return {
+    repoId: repo.repoId,
+    fullName: repo.fullName,
+    owner: repo.owner,
+    name: repo.name,
+    description: repo.description ?? null,
+    url: repo.url,
+    stars: repo.stars,
+    forks: repo.forks,
+    language: repo.language ?? null,
+    topics: repo.topics,
+    pushedAt: repo.pushedAt ?? null,
+    archived: repo.archived,
+    firstSeenAt: repo.firstSeenAt,
+    discoveredVia: repo.discoveredVia,
+    rating,
+  };
+}
+
+async function ratingsForUser(
+  ctx: QueryCtx,
+  userId: Id<"users">,
+): Promise<Map<number, number>> {
+  const ratings = await ctx.db
+    .query("ratings")
+    .withIndex("by_user", (q) => q.eq("userId", userId))
+    .collect();
+  return new Map(ratings.map((rating) => [rating.repoId, rating.value]));
+}
+
+function countBy(
+  values: Iterable<string>,
+  counts: Map<string, number>,
+): void {
+  for (const value of values) {
+    counts.set(value, (counts.get(value) ?? 0) + 1);
+  }
+}
+
+function facets(
+  counts: Map<string, number>,
+  limit: number,
+): { name: string; count: number }[] {
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, limit)
+    .map(([name, count]) => ({ name, count }));
+}
+
 /**
- * The feed: every cached repository that arrived through one of the user's
- * topics, with the user's interest rating attached (null when unrated).
+ * The dashboard feed: every cached project that arrived through one of the
+ * user's topics, with the user's interest rating attached (null when unrated).
  */
 export const list = query({
   args: {},
@@ -73,34 +126,11 @@ export const list = query({
     const slugs = topics.map((topic) => topic.slug);
     const slugSet = new Set(slugs);
 
+    const ratingByRepo = await ratingsForUser(ctx, userId);
     const repoDocs = await ctx.db.query("repos").collect();
-    const matches = repoDocs.filter((repo) =>
-      repo.discoveredVia.some((slug) => slugSet.has(slug)),
-    );
-
-    const ratings = await ctx.db
-      .query("ratings")
-      .withIndex("by_user", (q) => q.eq("userId", userId))
-      .collect();
-    const ratingByRepo = new Map(ratings.map((r) => [r.repoId, r.value]));
-
-    const items = matches.map((repo) => ({
-      repoId: repo.repoId,
-      fullName: repo.fullName,
-      owner: repo.owner,
-      name: repo.name,
-      description: repo.description ?? null,
-      url: repo.url,
-      stars: repo.stars,
-      forks: repo.forks,
-      language: repo.language ?? null,
-      topics: repo.topics,
-      pushedAt: repo.pushedAt ?? null,
-      archived: repo.archived,
-      firstSeenAt: repo.firstSeenAt,
-      discoveredVia: repo.discoveredVia,
-      rating: ratingByRepo.get(repo.repoId) ?? null,
-    }));
+    const items = repoDocs
+      .filter((repo) => repo.discoveredVia.some((slug) => slugSet.has(slug)))
+      .map((repo) => toProject(repo, ratingByRepo.get(repo.repoId) ?? null));
 
     const counts: Record<string, number> = {};
     for (const slug of slugs) counts[slug] = 0;
@@ -110,10 +140,45 @@ export const list = query({
       }
     }
 
-    let rated = 0;
-    for (const item of items) if (item.rating !== null) rated += 1;
+    return {
+      items,
+      counts,
+      total: items.length,
+      rated: items.filter((item) => item.rating !== null).length,
+    };
+  },
+});
 
-    return { items, counts, total: items.length, rated };
+/**
+ * The catalog: every project fetched so far, not only the ones in the current
+ * feed, so old topics stay browsable and searchable.
+ */
+export const catalog = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) return null;
+
+    const ratingByRepo = await ratingsForUser(ctx, userId);
+    const repoDocs = await ctx.db.query("repos").collect();
+    const items = repoDocs.map((repo) =>
+      toProject(repo, ratingByRepo.get(repo.repoId) ?? null),
+    );
+
+    const languageCounts = new Map<string, number>();
+    const topicCounts = new Map<string, number>();
+    for (const repo of repoDocs) {
+      if (repo.language) countBy([repo.language], languageCounts);
+      countBy(repo.topics, topicCounts);
+    }
+
+    return {
+      items,
+      total: items.length,
+      rated: items.filter((item) => item.rating !== null).length,
+      languages: facets(languageCounts, 8),
+      topics: facets(topicCounts, 14),
+    };
   },
 });
 

@@ -15,10 +15,10 @@ import {
 } from "@/components/ui/input-otp";
 
 import { useAuth } from "@/hooks/use-auth";
-import logo from "@/assets/logo.svg";
+import { Wordmark } from "@/components/wordmark";
 import { ArrowRight, Loader2, Mail, UserX } from "lucide-react";
 import { Suspense, useEffect, useState } from "react";
-import { useNavigate, useSearchParams } from "react-router";
+import { Link, useNavigate, useSearchParams } from "react-router";
 
 interface AuthProps {
   redirectAfterAuth?: string;
@@ -86,7 +86,7 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
     } catch (error) {
       console.error("OTP verification error:", error);
 
-      setError("The verification code you entered is incorrect.");
+      setError("That code doesn't match. Check the six digits and try again.");
       setIsLoading(false);
 
       setOtp("");
@@ -120,19 +120,17 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
           {step === "signIn" ? (
             <>
               <CardHeader className="text-center">
-              <div className="flex justify-center">
-                    <img
-                      src={logo}
-                      alt="Lock Icon"
-                      width={64}
-                      height={64}
-                      className="rounded-lg mb-4 mt-4 cursor-pointer"
-                      onClick={() => navigate("/")}
-                    />
-                  </div>
-                <CardTitle className="text-xl">Get Started</CardTitle>
+                <div className="flex justify-center pt-2 pb-1">
+                  <Link to="/" aria-label="GitHub Interest Feed home">
+                    <Wordmark />
+                  </Link>
+                </div>
+                <CardTitle className="text-xl">
+                  Sign in or create an account
+                </CardTitle>
                 <CardDescription>
-                  Enter your email to log in or sign up
+                  Enter your email and we&apos;ll send a six-digit code. If
+                  you&apos;re new here, the same code creates your account.
                 </CardDescription>
               </CardHeader>
               <form onSubmit={handleEmailSubmit}>
@@ -143,7 +141,7 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
                       <Mail className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
                       <Input
                         name="email"
-                        placeholder="name@example.com"
+                        placeholder="you@example.com"
                         type="email"
                         className="pl-9"
                         disabled={isLoading}
@@ -187,8 +185,11 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
                       disabled={isLoading}
                     >
                       <UserX className="mr-2 h-4 w-4" />
-                      Continue as Guest
+                      Continue as a guest
                     </Button>
+                    <p className="mt-2 text-center text-xs text-muted-foreground">
+                      No email needed. You&apos;ll start with an empty feed.
+                    </p>
                   </div>
                 </CardContent>
               </form>
@@ -198,7 +199,7 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
               <CardHeader className="text-center mt-4">
                 <CardTitle>Check your email</CardTitle>
                 <CardDescription>
-                  We've sent a code to {step.email}
+                  We sent a six-digit code to {step.email}.
                 </CardDescription>
               </CardHeader>
               <form onSubmit={handleOtpSubmit}>
@@ -235,13 +236,13 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
                     </p>
                   )}
                   <p className="text-sm text-muted-foreground text-center mt-4">
-                    Didn't receive a code?{" "}
+                    Didn&apos;t get a code?{" "}
                     <Button
                       variant="link"
                       className="p-0 h-auto"
                       onClick={() => setStep("signIn")}
                     >
-                      Try again
+                      Send a new one
                     </Button>
                   </p>
                 </CardContent>
@@ -258,7 +259,7 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
                       </>
                     ) : (
                       <>
-                        Verify code
+                        Verify and continue
                         <ArrowRight className="ml-2 h-4 w-4" />
                       </>
                     )}
@@ -270,7 +271,7 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
                     disabled={isLoading}
                     className="w-full"
                   >
-                    Use different email
+                    Use a different email
                   </Button>
                 </CardFooter>
               </form>

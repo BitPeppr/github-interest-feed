@@ -1,11 +1,11 @@
 import { GitFork, Star } from "lucide-react";
 
 import { InterestScale } from "@/components/feed/interest-scale";
-import type { FeedItem } from "@/components/feed/types";
+import type { Project } from "@/components/feed/types";
 import { formatCompact, formatRelative } from "@/lib/format";
 
 interface RepoRowProps {
-  item: FeedItem;
+  item: Project;
   onRate: (repoId: number, value: number) => void;
   onClear: (repoId: number) => void;
 }

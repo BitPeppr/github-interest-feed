@@ -18,7 +18,7 @@ interface TopicsPanelProps {
   isRefreshing: boolean;
 }
 
-/** Left rail: the topics that shape the feed. */
+/** Left rail on the dashboard: the topics that shape the feed. */
 export function TopicsPanel({
   topics,
   counts,
@@ -69,7 +69,7 @@ export function TopicsPanel({
     <aside className="lg:sticky lg:top-24 lg:self-start">
       <div className="flex items-baseline justify-between border-b pb-3">
         <h2 className="text-[11px] font-medium tracking-[0.16em] text-muted-foreground uppercase">
-          Topics you pick
+          Your topics
         </h2>
         <span className="text-[11px] text-muted-foreground tabular-nums">
           {topics.length}

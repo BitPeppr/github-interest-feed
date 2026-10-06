@@ -3,9 +3,12 @@ import { cn } from "@/lib/utils";
 /** Monochrome wordmark: a four-cell grid, sifted. */
 export function Wordmark({
   className,
+  nameClassName,
   showName = true,
 }: {
   className?: string;
+  /** Extra classes for the name, e.g. to hide it on narrow screens. */
+  nameClassName?: string;
   showName?: boolean;
 }) {
   return (
@@ -20,8 +23,13 @@ export function Wordmark({
         <span className="rounded-[1px] bg-foreground/35" />
       </span>
       {showName && (
-        <span className="text-[15px] font-semibold tracking-[-0.015em]">
-          Sift
+        <span
+          className={cn(
+            "text-[15px] font-semibold tracking-[-0.015em]",
+            nameClassName,
+          )}
+        >
+          GitHub Interest Feed
         </span>
       )}
     </span>

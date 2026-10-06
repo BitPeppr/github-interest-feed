@@ -43,7 +43,7 @@ export interface SyncResult {
 function githubHeaders(): Record<string, string> {
   const headers: Record<string, string> = {
     Accept: "application/vnd.github+json",
-    "User-Agent": "sift-github-interest-feed",
+    "User-Agent": "github-interest-feed",
     "X-GitHub-Api-Version": "2022-11-28",
   };
   // Optional: a personal access token raises GitHub's rate limit from
