@@ -49,39 +49,210 @@ export function normalizeTopic(raw: string): string {
 /**
  * Broad topics the feed can explore on its own. They keep the discovery feed
  * endless even when the user has followed no topics at all.
+ *
+ * Breadth matters more than depth here: a topic is the only door into the
+ * catalog, and the first version of this list was thirty web/ML keywords, so
+ * every card arrived from the same few corners of GitHub. It is grouped by
+ * domain purely for readability.
  */
 export const DEFAULT_TOPICS = [
+  // Languages and runtimes
   "typescript",
   "javascript",
   "python",
   "rust",
   "go",
+  "c",
+  "cpp",
+  "java",
+  "kotlin",
+  "swift",
+  "ruby",
+  "php",
+  "elixir",
+  "haskell",
+  "lua",
+  "zig",
+  "ocaml",
+  "scala",
+  "clojure",
+  "r",
+  "julia",
+  "dart",
+  "csharp",
+  "fortran",
+  "nim",
+  "crystal",
+  "webassembly",
+
+  // Terminals, editors and the desktop
   "cli",
+  "tui",
+  "terminal",
+  "shell",
+  "zsh",
+  "bash",
+  "fish-shell",
+  "vim",
+  "neovim",
+  "emacs",
+  "text-editor",
+  "dotfiles",
+  "window-manager",
+  "status-bar",
+  "tmux",
+  "screensaver",
+  "wallpaper",
+  "fonts",
+  "typography",
+
+  // Systems, hardware and infrastructure
+  "operating-system",
+  "kernel",
+  "unix",
+  "filesystem",
+  "embedded",
+  "microcontroller",
+  "arduino",
+  "raspberry-pi",
+  "firmware",
+  "electronics",
+  "keyboard",
+  "mechanical-keyboard",
+  "qmk",
+  "ergonomic-keyboard",
+  "3d-printing",
+  "cad",
+  "robotics",
+  "drones",
+  "iot",
+  "smart-home",
+  "home-automation",
+  "homelab",
+  "self-hosted",
+  "system-monitoring",
+  "observability",
+  "infrastructure",
+  "devops",
+  "docker",
+  "kubernetes",
+  "networking",
+  "vpn",
+  "proxy",
+  "p2p",
+  "backup",
+  "encryption",
+  "cryptography",
+  "reverse-engineering",
+  "security",
+  "compilers",
+  "interpreters",
+  "virtual-machine",
+  "emulator",
+  "retro-computing",
+  "assembly",
+  "concurrency",
+  "distributed-systems",
+
+  // Science, maths and data
+  "scientific-computing",
+  "simulation",
+  "physics",
+  "chemistry",
+  "biology",
+  "bioinformatics",
+  "astronomy",
+  "mathematics",
+  "statistics",
+  "quantum-computing",
+  "signal-processing",
+  "geospatial",
+  "machine-learning",
+  "deep-learning",
+  "neural-network",
+  "computer-vision",
+  "nlp",
+  "data-science",
+  "data-visualization",
+  "visualization",
+
+  // Graphics, games and generative work
+  "graphics",
+  "opengl",
+  "vulkan",
+  "shaders",
+  "ray-tracing",
+  "rendering",
+  "3d",
+  "game-engine",
+  "game-development",
+  "godot",
+  "chess",
+  "pixel-art",
+  "ascii-art",
+  "generative-art",
+  "creative-coding",
+  "demoscene",
+  "art",
+  "music",
+  "audio",
+  "synthesizer",
+  "midi",
+  "music-production",
+  "video",
+  "image-processing",
+  "photography",
+  "animation",
+
+  // Web, tooling and everyday software
   "devtools",
   "web-development",
-  "machine-learning",
-  "data-science",
   "react",
   "vue",
   "svelte",
   "nodejs",
-  "docker",
-  "kubernetes",
-  "linux",
-  "terminal",
-  "database",
   "api",
-  "security",
-  "compilers",
-  "game-development",
-  "mobile",
-  "devops",
+  "database",
+  "sql",
+  "storage",
   "testing",
-  "webassembly",
   "automation",
   "productivity",
   "design-system",
+  "package-manager",
+  "build-tool",
+  "documentation",
+  "static-site-generator",
+  "cms",
+  "markdown",
+  "notes",
+  "note-taking",
+  "knowledge-base",
+  "rss",
+  "search",
+  "email",
+  "chat",
+  "browser",
+  "browser-extension",
+  "mobile",
+  "parser",
+  "serialization",
 ];
+
+/**
+ * Rotating star bands for popularity-sorted searches. Without them every
+ * search returns the same handful of mega-popular repositories, which is what
+ * made the feed look like it only knew a few corners of GitHub.
+ */
+const STAR_BANDS = [
+  "",
+  " stars:25..500",
+  " stars:500..5000",
+  " stars:2000..20000",
+];
+
+/** Freshness-sorted searches stay above the noise floor of abandoned repos. */
+const ACTIVE_STARS = " stars:>=25";
 
 const FEED_WINDOW = 24;
 const MAX_README_CHARS = 12_000;
@@ -158,6 +329,39 @@ function facets(
     .map(([name, count]) => ({ name, count }));
 }
 
+/**
+ * Deterministic per-user starting point in the topic pool. Without it every
+ * account walks the same list from the same place and sees the same famous
+ * projects first.
+ */
+function seededOffset(seed: string, length: number): number {
+  if (length <= 1) return 0;
+  let hash = 0;
+  for (let index = 0; index < seed.length; index += 1) {
+    hash = (hash * 31 + seed.charCodeAt(index)) | 0;
+  }
+  return Math.abs(hash) % length;
+}
+
+/**
+ * How much a rated-highly project should push the feed toward its topics.
+ * Capped: rating twenty projects that share a topic used to add twenty points
+ * to it, which buried every other topic in the feed.
+ */
+function affinityWeight(count: number): number {
+  return Math.min(count, 3);
+}
+
+/**
+ * Ranking weights for the candidate window. Popularity is a tiebreaker here,
+ * not the signal: at 0.5·log10(stars) a 100k-star repository outranked every
+ * smaller one, so whole domains — keyboards, TUIs, simulations, art, music —
+ * could never reach the window even once they were in the catalog.
+ */
+const STARS_WEIGHT = 0.35;
+const STARS_CAP = 1.4;
+const JITTER_WEIGHT = 1.2;
+
 /** Never lose a project to a tie: the jitter is stable per project. */
 function noveltyScore(
   repo: Doc<"repos">,
@@ -167,15 +371,17 @@ function noveltyScore(
 ): number {
   if (repo.archived) return -100;
 
-  let score = Math.log10(repo.stars + 1) * 0.5;
+  let score = Math.min(Math.log10(repo.stars + 1) * STARS_WEIGHT, STARS_CAP);
   if (repo.pushedAt && now - repo.pushedAt < 120 * 24 * 60 * 60 * 1000) {
     score += 0.6;
   }
   for (const topic of repo.topics) {
-    score += (topicAffinity.get(topic) ?? 0) * 0.4;
+    score += affinityWeight(topicAffinity.get(topic) ?? 0) * 0.4;
   }
-  if (repo.language) score += (languageAffinity.get(repo.language) ?? 0) * 0.6;
-  score += ((repo.repoId % 997) / 997) * 0.45;
+  if (repo.language) {
+    score += affinityWeight(languageAffinity.get(repo.language) ?? 0) * 0.6;
+  }
+  score += ((repo.repoId % 997) / 997) * JITTER_WEIGHT;
   return score;
 }
 
@@ -690,12 +896,20 @@ export const planSearches = internalMutation({
     const step = state?.step ?? 0;
 
     const requested = Math.max(1, Math.min(count, 4));
+    const start = seededOffset(userId, pool.length);
     const specs = Array.from({ length: requested }, (_, offset) => {
       const index = step + offset;
+      // Alternate the ordering so the feed is not just the famous few.
+      const sort = index % 2 === 0 ? ("stars" as const) : ("updated" as const);
       return {
-        topic: pool[index % pool.length],
-        // Alternate the ordering so the feed is not just the famous few.
-        sort: index % 2 === 0 ? ("stars" as const) : ("updated" as const),
+        topic: pool[(start + index) % pool.length],
+        sort,
+        // Popularity-sorted searches rotate through star bands so smaller
+        // keyboard/TUI/art/music projects are reachable at all.
+        stars:
+          sort === "updated"
+            ? ACTIVE_STARS
+            : STAR_BANDS[Math.floor(index / 2) % STAR_BANDS.length],
         page: Math.floor(index / pool.length) + 1,
       };
     });

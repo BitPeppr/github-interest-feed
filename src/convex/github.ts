@@ -17,6 +17,8 @@ interface SearchSpec {
   topic: string;
   sort: "stars" | "updated";
   page: number;
+  /** GitHub `stars:` qualifier chosen by the planner, e.g. " stars:25..500". */
+  stars: string;
 }
 
 interface GitHubSearchItem {
@@ -113,8 +115,7 @@ function mapItem(item: GitHubSearchItem): DiscoveredRepo {
 
 async function searchRepos(spec: SearchSpec): Promise<DiscoveredRepo[]> {
   const url = new URL(GITHUB_SEARCH_URL);
-  const qualifier = spec.sort === "updated" ? " stars:>=25" : "";
-  url.searchParams.set("q", `topic:${spec.topic}${qualifier}`);
+  url.searchParams.set("q", `topic:${spec.topic}${spec.stars}`);
   url.searchParams.set("sort", spec.sort);
   url.searchParams.set("order", "desc");
   url.searchParams.set("per_page", String(RESULTS_PER_SEARCH));
@@ -204,7 +205,13 @@ export const syncTopic = action({
     if (!slug) throw new Error('Enter a topic like "rust" or "devtools".');
 
     try {
-      const repos = await searchRepos({ topic: slug, sort: "stars", page: 1 });
+      // A followed topic is taken at face value: its most popular projects.
+      const repos = await searchRepos({
+        topic: slug,
+        sort: "stars",
+        page: 1,
+        stars: "",
+      });
       const added = await storeRepos(ctx, userId, slug, repos);
       return { slug, added, fetched: repos.length, error: null };
     } catch (error) {
