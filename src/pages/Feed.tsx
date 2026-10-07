@@ -166,10 +166,12 @@ export default function Feed() {
     // long before the viewer reaches them.
     warmQueue.current.push(...additions);
     drainWarmQueue();
-    const timer = window.setTimeout(() => {
-      setIds((current) => [...current, ...additions.filter((id) => !current.includes(id))]);
-    }, 0);
-    return () => window.clearTimeout(timer);
+    // Append synchronously: a deferred append could be cancelled by a dep
+    // change after `queued` was marked, losing these ids for good.
+    setIds((current) => [
+      ...current,
+      ...additions.filter((id) => !current.includes(id)),
+    ]);
   }, [discovery, drainWarmQueue, excluded, shouldDiscover]);
 
   const loadMore = useCallback(async (force = false) => {

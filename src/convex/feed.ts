@@ -818,8 +818,14 @@ export const readme = query({
     if (!userId) return null;
     const repo = await findRepo(ctx, repoId);
     if (!repo) return null;
+    // README text lives in its own table; the fallback covers rows that have
+    // not been migrated yet.
+    const record = await ctx.db
+      .query("repoReadmes")
+      .withIndex("by_repo_id", (q) => q.eq("repoId", repoId))
+      .unique();
     return {
-      readme: repo.readme ?? null,
+      readme: record?.readme ?? repo.readme ?? null,
       readmeLoaded: repo.readmeFetchedAt !== undefined,
       images: repo.images ?? [],
     };
@@ -961,6 +967,7 @@ async function upsertInteraction(
   repoId: number,
   patch: {
     value?: number;
+    implicit?: boolean;
     saved?: boolean;
     hidden?: boolean;
     seenAt?: number;
@@ -995,7 +1002,12 @@ export const setRating = mutation({
     const userId = await getAuthUserId(ctx);
     if (!userId) throw new Error("Sign in to rate projects.");
     const clamped = Math.max(1, Math.min(5, Math.round(value)));
-    await upsertInteraction(ctx, userId, repoId, { value: clamped });
+    // A deliberate rating replaces an imported one: clear the implicit flag so
+    // the rating counts in stats and Wrapped.
+    await upsertInteraction(ctx, userId, repoId, {
+      value: clamped,
+      implicit: undefined,
+    });
     return clamped;
   },
 });
@@ -1387,14 +1399,55 @@ export const saveEnrichment = internalMutation({
         .unique();
       if (!repo) continue;
       await ctx.db.patch(repo._id, {
-        readme: entry.readme
-          ? entry.readme.slice(0, MAX_README_CHARS)
-          : undefined,
         images: entry.images,
         readmeFetchedAt: now,
         updatedAt: now,
       });
+      // The README text itself goes beside the repo doc, keeping the repos
+      // table small enough to scan freely.
+      const record = await ctx.db
+        .query("repoReadmes")
+        .withIndex("by_repo_id", (q) => q.eq("repoId", entry.repoId))
+        .unique();
+      const text = entry.readme
+        ? entry.readme.slice(0, MAX_README_CHARS)
+        : undefined;
+      if (record) {
+        await ctx.db.patch(record._id, { readme: text });
+      } else {
+        await ctx.db.insert("repoReadmes", {
+          repoId: entry.repoId,
+          readme: text,
+        });
+      }
     }
     return entries.length;
+  },
+});
+
+/** One-off: shift legacy README text off the repos table. Idempotent. */
+export const migrateReadmes = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const repos = await ctx.db.query("repos").collect();
+    let moved = 0;
+    for (const repo of repos) {
+      if (repo.readme === undefined) continue;
+      const existing = await ctx.db
+        .query("repoReadmes")
+        .withIndex("by_repo_id", (q) => q.eq("repoId", repo.repoId))
+        .unique();
+      if (existing) {
+        await ctx.db.patch(existing._id, { readme: repo.readme });
+      } else {
+        await ctx.db.insert("repoReadmes", {
+          repoId: repo.repoId,
+          readme: repo.readme,
+        });
+      }
+      await ctx.db.patch(repo._id, { readme: undefined });
+      moved += 1;
+    }
+    return { moved };
   },
 });

@@ -7,18 +7,15 @@ import { Loading } from "@/components/feed/loading";
 import { Button } from "@/components/ui/button";
 import { Wordmark } from "@/components/wordmark";
 import { api } from "@/convex/_generated/api";
-import type { Id } from "@/convex/_generated/dataModel";
 import { formatCompact, formatRelative } from "@/lib/format";
-
-/** Convex ids are short alphanumeric strings; anything else is a 404. */
-const ID_PATTERN = /^[a-z0-9]{8,40}$/i;
 
 export default function SharedCollection() {
   const { collectionId } = useParams();
-  const valid = collectionId !== undefined && ID_PATTERN.test(collectionId);
+  // Malformed ids are handled server-side: the query returns null and the page
+  // below says "not available" instead of crashing on argument validation.
   const collection = useQuery(
     api.collections.shared,
-    valid ? { collectionId: collectionId as Id<"collections"> } : "skip",
+    collectionId ? { collectionId } : "skip",
   );
 
   return (
@@ -40,7 +37,7 @@ export default function SharedCollection() {
         transition={{ duration: 0.24, ease: "easeOut" }}
         className="mx-auto w-full max-w-5xl px-6 py-10 sm:py-14"
       >
-        {!valid || (collection !== undefined && collection === null) ? (
+        {!collectionId || (collection !== undefined && collection === null) ? (
           <div className="py-24 text-center">
             <h1 className="text-2xl font-semibold tracking-tight">
               This collection is not available

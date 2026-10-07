@@ -71,6 +71,14 @@ const schema = defineSchema(
       starAccel: v.optional(v.number()), // growth speeding up (+) or fading (-)
     }).index("by_repo_id", ["repoId"]),
 
+    // README text lives beside the repo doc, not on it: feed discovery scans
+    // the whole repos table on every call and READMEs are the bulk of the
+    // data. Fetched lazily per card from here.
+    repoReadmes: defineTable({
+      repoId: v.number(),
+      readme: v.optional(v.string()), // raw markdown, truncated
+    }).index("by_repo_id", ["repoId"]),
+
     // Daily star counts, diffed against each other so projects can rank by
     // growth velocity instead of raw size.
     starHistory: defineTable({

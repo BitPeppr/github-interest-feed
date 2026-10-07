@@ -313,14 +313,21 @@ export const importStars = action({
       return { imported: 0, total: 0, skipped: 0 };
     }
 
-    await ctx.runMutation(internal.feed.saveDiscoveredRepos, {
-      userId,
-      topicSlug: "github-stars",
-      repos,
-    });
-    await ctx.runMutation(internal.feed.recordStarSnapshots, {
-      entries: repos.map((repo) => ({ repoId: repo.repoId, stars: repo.stars })),
-    });
+    // Chunked so a 500-star import never pushes one mutation past its limits.
+    for (let start = 0; start < repos.length; start += 100) {
+      const chunk = repos.slice(start, start + 100);
+      await ctx.runMutation(internal.feed.saveDiscoveredRepos, {
+        userId,
+        topicSlug: "github-stars",
+        repos: chunk,
+      });
+      await ctx.runMutation(internal.feed.recordStarSnapshots, {
+        entries: chunk.map((repo) => ({
+          repoId: repo.repoId,
+          stars: repo.stars,
+        })),
+      });
+    }
     const result = await ctx.runMutation(internal.feed.applyStarImport, {
       userId,
       repoIds: repos.map((repo) => repo.repoId),
@@ -346,24 +353,41 @@ export const refreshStarSnapshots = internalAction({
       { limit: 40 },
     );
     const entries: { repoId: number; stars: number }[] = [];
-    for (const target of targets) {
-      try {
-        const response = await fetch(
-          `https://api.github.com/repos/${target.fullName}`,
-          { headers: githubHeaders() },
-        );
-        // Out of rate budget today: keep what we have, try again tomorrow.
-        if (response.status === 403 || response.status === 429) break;
-        if (!response.ok) continue;
-        const payload = (await response.json()) as { stargazers_count?: number };
-        if (typeof payload.stargazers_count === "number") {
-          entries.push({
-            repoId: target.repoId,
-            stars: payload.stargazers_count,
-          });
-        }
-      } catch {
-        // Best effort: tomorrow's run catches up.
+    let rateLimited = false;
+    // Small concurrent batches: sequential fetches were slow for no gain.
+    for (let start = 0; start < targets.length && !rateLimited; start += 8) {
+      const batch = targets.slice(start, start + 8);
+      const results = await Promise.all(
+        batch.map(async (target) => {
+          try {
+            const response = await fetch(
+              `https://api.github.com/repos/${target.fullName}`,
+              { headers: githubHeaders() },
+            );
+            // Out of rate budget today: keep what we have, try again tomorrow.
+            if (response.status === 403 || response.status === 429) {
+              return { rateLimited: true, entry: null };
+            }
+            if (!response.ok) return { rateLimited: false, entry: null };
+            const payload = (await response.json()) as {
+              stargazers_count?: number;
+            };
+            return {
+              rateLimited: false,
+              entry:
+                typeof payload.stargazers_count === "number"
+                  ? { repoId: target.repoId, stars: payload.stargazers_count }
+                  : null,
+            };
+          } catch {
+            // Best effort: tomorrow's run catches up.
+            return { rateLimited: false, entry: null };
+          }
+        }),
+      );
+      for (const result of results) {
+        if (result.rateLimited) rateLimited = true;
+        if (result.entry) entries.push(result.entry);
       }
     }
     if (entries.length > 0) {

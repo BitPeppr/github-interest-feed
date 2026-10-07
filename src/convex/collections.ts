@@ -1,7 +1,7 @@
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { v } from "convex/values";
 
-import { findRepo, interactionsForUser, toProject } from "./feed";
+import { interactionsForUser, toProject } from "./feed";
 import type { Doc, Id } from "./_generated/dataModel";
 import {
   mutation,
@@ -146,11 +146,17 @@ export const remove = mutation({
   },
 });
 
-/** A shared collection page — public ones, or the owner previewing their own. */
+/**
+ * A shared collection page — public ones, or the owner previewing their own.
+ * The id arrives as a string and is normalized here, so a malformed link
+ * returns "not available" instead of an argument-validation crash.
+ */
 export const shared = query({
-  args: { collectionId: v.id("collections") },
+  args: { collectionId: v.string() },
   handler: async (ctx, { collectionId }) => {
-    const collection = await ctx.db.get(collectionId);
+    const id = ctx.db.normalizeId("collections", collectionId);
+    if (!id) return null;
+    const collection = await ctx.db.get(id);
     if (!collection) return null;
     const viewerId = await getAuthUserId(ctx);
     if (!collection.isPublic && collection.userId !== viewerId) return null;
@@ -159,11 +165,16 @@ export const shared = query({
     const interactions = viewerId
       ? await interactionsForUser(ctx, viewerId)
       : new Map<number, Doc<"ratings">>();
-    const items: ReturnType<typeof toProject>[] = [];
-    for (const repoId of collection.repoIds) {
-      const repo = await findRepo(ctx, repoId);
-      if (repo) items.push(toProject(repo, interactions.get(repoId) ?? null));
-    }
+    // One scan feeds every item — no per-item lookups.
+    const repos = new Map(
+      (await ctx.db.query("repos").collect()).map((repo) => [repo.repoId, repo]),
+    );
+    const items = collection.repoIds
+      .map((repoId) => {
+        const repo = repos.get(repoId);
+        return repo ? toProject(repo, interactions.get(repoId) ?? null) : null;
+      })
+      .filter((item) => item !== null);
     return {
       name: collection.name,
       description: collection.description ?? null,
@@ -215,22 +226,28 @@ export const setProfile = mutation({
   },
 });
 
-/** The shelf at /u/:userId. Opt-in only: ratings stay private by default. */
+/**
+ * The shelf at /u/:userId. Opt-in only: ratings stay private by default.
+ * The id is normalized here so malformed links return "not public" instead of
+ * crashing on argument validation.
+ */
 export const publicProfile = query({
-  args: { userId: v.id("users") },
+  args: { userId: v.string() },
   handler: async (ctx, { userId }) => {
+    const normalized = ctx.db.normalizeId("users", userId);
+    if (!normalized) return null;
     const profile = await ctx.db
       .query("profiles")
-      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .withIndex("by_user", (q) => q.eq("userId", normalized))
       .unique();
     const viewerId = await getAuthUserId(ctx);
-    const isOwner = viewerId === userId;
+    const isOwner = viewerId === normalized;
     if (profile?.isPublic !== true && !isOwner) return null;
 
-    const owner = await ctx.db.get(userId);
+    const owner = await ctx.db.get(normalized);
     const rows = await ctx.db
       .query("ratings")
-      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .withIndex("by_user", (q) => q.eq("userId", normalized))
       .collect();
     const repos = new Map(
       (await ctx.db.query("repos").collect()).map((repo) => [repo.repoId, repo]),
@@ -252,7 +269,7 @@ export const publicProfile = query({
     const collections = (
       await ctx.db
         .query("collections")
-        .withIndex("by_user", (q) => q.eq("userId", userId))
+        .withIndex("by_user", (q) => q.eq("userId", normalized))
         .collect()
     )
       .filter((collection) => collection.isPublic)

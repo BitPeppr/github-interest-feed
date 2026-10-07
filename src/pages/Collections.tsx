@@ -287,13 +287,15 @@ export default function Collections() {
                 size="sm"
                 variant="ghost"
                 className="gap-1.5 text-muted-foreground hover:text-foreground"
-                onClick={() =>
-                  editing &&
+                onClick={() => {
+                  if (!editing) return;
+                  const id = editing;
+                  setEditing(null);
                   run(
-                    () => removeCollection({ collectionId: editing }),
+                    () => removeCollection({ collectionId: id }),
                     "Could not delete the collection.",
-                  )
-                }
+                  );
+                }}
               >
                 <Trash2 className="size-3.5" />
                 Delete

@@ -10,21 +10,18 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Wordmark } from "@/components/wordmark";
 import { api } from "@/convex/_generated/api";
-import type { Id } from "@/convex/_generated/dataModel";
 import { useAuth } from "@/hooks/use-auth";
 import { errorText, formatCompact } from "@/lib/format";
 
-/** Convex ids are short alphanumeric strings; anything else is a 404. */
-const ID_PATTERN = /^[a-z0-9]{8,40}$/i;
-
 export default function Profile() {
   const { userId } = useParams();
-  const valid = userId !== undefined && ID_PATTERN.test(userId);
   const { isAuthenticated } = useAuth();
 
+  // Malformed ids are handled server-side: the query returns null and the page
+  // below says "not public" instead of crashing on argument validation.
   const profile = useQuery(
     api.collections.publicProfile,
-    valid ? { userId: userId as Id<"users"> } : "skip",
+    userId ? { userId } : "skip",
   );
   // Owner-only settings: skipped entirely for signed-out viewers so the
   // public page works without an account.
@@ -67,7 +64,7 @@ export default function Profile() {
         transition={{ duration: 0.24, ease: "easeOut" }}
         className="mx-auto w-full max-w-5xl px-6 py-10 sm:py-14"
       >
-        {!valid || (profile !== undefined && profile === null) ? (
+        {!userId || (profile !== undefined && profile === null) ? (
           <div className="py-24 text-center">
             <h1 className="text-2xl font-semibold tracking-tight">
               This shelf is not public
