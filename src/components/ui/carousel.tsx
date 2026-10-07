@@ -93,11 +93,15 @@ function Carousel({
 
   React.useEffect(() => {
     if (!api) return
-    onSelect(api)
     api.on("reInit", onSelect)
     api.on("select", onSelect)
+    // Report the initial selection after the commit — a synchronous call here
+    // can cascade renders. Later changes arrive through the listeners.
+    const initial = window.setTimeout(() => onSelect(api), 0)
 
     return () => {
+      window.clearTimeout(initial)
+      api?.off("reInit", onSelect)
       api?.off("select", onSelect)
     }
   }, [api, onSelect])
