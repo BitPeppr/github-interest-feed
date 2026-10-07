@@ -14,16 +14,16 @@ const FEED_PATH = "/auth?returnTo=%2Ffeed";
 /** Sample cards that show what the feed looks like, using real GitHub art. */
 const PREVIEW_CARDS = [
   {
-    owner: "josefadamcik",
-    name: "SofleKeyboard",
+    owner: "kata0510",
+    name: "Lily58",
     description:
-      "A split mechanical keyboard based on Lily58, CRKBD and Helix — the design a lot of people build when they get serious about ergonomics.",
+      "6	imes4+4 keys column-staggered split keyboard.",
     language: "Unknown",
-    stars: "2.5k",
-    forks: "1.3k",
-    heading: "Why split?",
+    stars: "2.3k",
+    forks: "1.2k",
+    heading: "Before the Sofle",
     readme:
-      "A split keyboard keeps your shoulders where they belong. Sofle combines a Lily58-style inner column set with the ergonomics of the CRKBD and Helix families, a nice OLED per side and enough room under the case for a comfortable gasket mount. Palm-half defaults to an alphanumeric layout with a thumb cluster on each side.",
+      "The Lily58 is the ancestor of the Sofle. 4 rows on each side, 4 keys on the middle column, a middle column per side — at least two palm keys. No little OLED per side, no caps-lock Blinky, less room under the case; the Sofle put those in and got more thumb keys on the job. This is where the hobby went: 6 columns on each hand and one column down the middle.",
     rating: 4,
   },
   {
@@ -174,14 +174,19 @@ function PreviewCard({ card }: { card: (typeof PREVIEW_CARDS)[number] }) {
           <h3 className="text-base font-semibold tracking-[-0.01em] text-foreground">
             {card.heading}
           </h3>
-          <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+          <p className="mt-2 text-sm leading-relaxed text-foreground/90">
             {card.readme}
           </p>
         </div>
       </div>
 
-      <footer className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-b-xl border-t border-border bg-background/90 px-5 py-3">
-        <PreviewScale value={card.rating} />
+      <footer className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-b-xl border-t border-border bg-background/90 px-5 py-3">
+        <div className="flex items-center gap-3">
+          <PreviewScale value={card.rating} />
+            <span className="font-mono text-[11px] tracking-[0.14em] text-muted-foreground">
+            {card.rating}/5
+          </span>
+        </div>
         <span className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground">
           <Bookmark className="size-3.5" />
           {card.rating ? "Saved" : "Save"}
