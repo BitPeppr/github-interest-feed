@@ -121,7 +121,7 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
             <>
               <CardHeader className="text-center">
                 <div className="flex justify-center pt-2 pb-1">
-                  <Link to="/" aria-label="GitHub Interest Feed home">
+                  <Link to="/" aria-label="Gitbook home">
                     <Wordmark />
                   </Link>
                 </div>

@@ -1,7 +1,7 @@
 {
-  "name": "GitHub Interest Feed",
-  "short_name": "Interest Feed",
-  "description": "A personal GitHub feed you tune by rating the projects your topics turn up.",
+  "name": "Gitbook",
+  "short_name": "Gitbook",
+  "description": "Social media, but for GitHub: an endless feed you tune by rating the projects your topics turn up.",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#ffffff",

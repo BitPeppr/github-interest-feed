@@ -29,7 +29,7 @@ export function Wordmark({
             nameClassName,
           )}
         >
-          GitHub Interest Feed
+          Gitbook
         </span>
       )}
     </span>

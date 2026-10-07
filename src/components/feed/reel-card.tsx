@@ -220,7 +220,7 @@ export function ReelCard({
               {project.topics.slice(0, 6).map((topic) => (
                 <span
                   key={topic}
-                  className="rounded-full bg-muted px-2.5 py-1 font-mono text-[11px] tracking-wide text-muted-foreground"
+                  className="rounded-full border border-border bg-muted px-2.5 py-1 font-mono text-[11px] tracking-wide text-muted-foreground transition-colors hover:border-foreground/30 hover:text-foreground"
                 >
                   {topic}
                 </span>

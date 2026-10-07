@@ -29,7 +29,7 @@ export function AppHeader({ active }: { active: AppSection }) {
         <div className="flex h-full items-center gap-5 sm:gap-8">
           <Link
             to="/"
-            aria-label="GitHub Interest Feed home"
+            aria-label="Gitbook home"
             className="flex items-center"
           >
             <Wordmark nameClassName="hidden sm:inline" />

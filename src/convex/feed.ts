@@ -392,6 +392,14 @@ const SIMILARITY_PENALTY = 0.55;
 /** X's repeated-author decay, applied per owner inside one window. */
 const REPEAT_DECAY = 0.55;
 const REPEAT_FLOOR = 0.18;
+/**
+ * Milder per-language decay. Languages don't show up in Jaccard similarity
+ * strongly enough to stop one ecosystem flooding a window, so a couple of a
+ * language are free and each further one costs a little.
+ */
+const LANGUAGE_REPEAT_FREE = 2;
+const LANGUAGE_REPEAT_DECAY = 0.8;
+const LANGUAGE_REPEAT_FLOOR = 0.5;
 /** Slots in every window reserved for exploration instead of score. */
 const EXPLORE_SLOTS = 6;
 /** Scored candidates the selector chooses from, after the catalog scan. */
@@ -522,6 +530,7 @@ function selectWindow(pool: Scored[], size: number): Scored[] {
   const chosen: Scored[] = [];
   const remaining = [...pool];
   const ownerRepeats = new Map<string, number>();
+  const languageRepeats = new Map<string, number>();
 
   while (chosen.length < size && remaining.length > 0) {
     let bestIndex = 0;
@@ -535,7 +544,16 @@ function selectWindow(pool: Scored[], size: number): Scored[] {
       }
       const repeats = ownerRepeats.get(entry.repo.owner) ?? 0;
       const decay = repeats === 0 ? 1 : Math.max(REPEAT_FLOOR, REPEAT_DECAY ** repeats);
-      const value = (entry.score - SIMILARITY_PENALTY * similarity) * decay;
+      const language = entry.repo.language;
+      const languageCount = language ? (languageRepeats.get(language) ?? 0) : 0;
+      const languageDecay =
+        languageCount < LANGUAGE_REPEAT_FREE
+          ? 1
+          : Math.max(
+              LANGUAGE_REPEAT_FLOOR,
+              LANGUAGE_REPEAT_DECAY ** (languageCount - LANGUAGE_REPEAT_FREE + 1),
+            );
+      const value = (entry.score - SIMILARITY_PENALTY * similarity) * decay * languageDecay;
       if (value > bestValue) {
         bestValue = value;
         bestIndex = index;
@@ -545,6 +563,12 @@ function selectWindow(pool: Scored[], size: number): Scored[] {
     const [picked] = remaining.splice(bestIndex, 1);
     chosen.push(picked);
     ownerRepeats.set(picked.repo.owner, (ownerRepeats.get(picked.repo.owner) ?? 0) + 1);
+    if (picked.repo.language) {
+      languageRepeats.set(
+        picked.repo.language,
+        (languageRepeats.get(picked.repo.language) ?? 0) + 1,
+      );
+    }
   }
 
   return chosen;
@@ -706,8 +730,14 @@ export const discovery = query({
 
     // A slice of every window is chosen for exploration rather than for score,
     // from the facets the viewer has never met — the bandit-style half of the
-    // feed that keeps whole domains from staying invisible forever.
-    const exploreSlots = Math.min(EXPLORE_SLOTS, Math.max(1, Math.floor(size / 3)));
+    // feed that keeps whole domains from staying invisible forever. The slice
+    // cools as impressions accumulate: early on the feed is mostly discovery,
+    // later it leans on what it has learned and exploration halves.
+    const exploreCool = Math.max(0.5, 1 - signals.totalImpressions / 300);
+    const exploreSlots = Math.min(
+      EXPLORE_SLOTS,
+      Math.max(1, Math.floor((size / 3) * exploreCool)),
+    );
     const explorers = selectWindow(
       pool
         .filter((entry) => entry.explore >= 1)

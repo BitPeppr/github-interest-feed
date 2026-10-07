@@ -7,7 +7,7 @@ import { normalizeTopic, type DiscoveredRepo } from "./feed";
 import { extractImages, readmeUrls } from "./lib/readme";
 
 const GITHUB_SEARCH_URL = "https://api.github.com/search/repositories";
-const USER_AGENT = "github-interest-feed";
+const USER_AGENT = "gitbook";
 const RESULTS_PER_SEARCH = 30;
 /** READMEs are fetched a few at a time, for the cards about to be shown. */
 const MAX_ENRICH_PER_CALL = 6;

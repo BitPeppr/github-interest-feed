@@ -41,6 +41,22 @@ const PREVIEW_CARDS = [
   },
 ];
 
+/** Real corners of GitHub the feed explores, sampled from its topic list. */
+const TOPIC_TAGS = [
+  "keyboards",
+  "tui",
+  "physics",
+  "screensavers",
+  "synthesis",
+  "compilers",
+  "generative-art",
+  "emulators",
+  "self-hosted",
+  "raytracing",
+  "midi",
+  "e-ink",
+];
+
 const STEPS = [
   {
     number: "01",
@@ -119,11 +135,22 @@ function PreviewScale({ value }: { value: number | null }) {
   );
 }
 
-function PreviewCard({ card }: { card: (typeof PREVIEW_CARDS)[number] }) {
+function PreviewCard({
+  card,
+  tilt,
+}: {
+  card: (typeof PREVIEW_CARDS)[number];
+  tilt: string;
+}) {
   const [mediaBroken, setMediaBroken] = useState(false);
 
   return (
-    <article className="rounded-xl border border-border bg-card">
+    <article
+      className={cn(
+        "rounded-xl border border-border bg-card transition-transform duration-300 hover:rotate-0",
+        tilt,
+      )}
+    >
       <header className="flex items-start gap-3 px-5 pt-5">
         <img
           src={`https://github.com/${card.owner}.png?size=80`}
@@ -183,7 +210,7 @@ function PreviewCard({ card }: { card: (typeof PREVIEW_CARDS)[number] }) {
       <footer className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-b-xl border-t border-border bg-background/90 px-5 py-3">
         <div className="flex items-center gap-3">
           <PreviewScale value={card.rating} />
-            <span className="font-mono text-[11px] tracking-[0.14em] text-muted-foreground">
+          <span className="font-mono text-[11px] tracking-[0.14em] text-muted-foreground">
             {card.rating}/5
           </span>
         </div>
@@ -214,7 +241,7 @@ export default function Landing() {
     <div className="min-h-screen bg-background text-foreground">
       <header className="sticky top-0 z-30 border-b border-border bg-background/85 backdrop-blur-sm">
         <div className="mx-auto flex h-14 w-full max-w-5xl items-center justify-between gap-4 px-6">
-          <Link to="/" aria-label="GitHub Interest Feed home">
+          <Link to="/" aria-label="Gitbook home">
             <Wordmark nameClassName="hidden sm:inline" />
           </Link>
           <nav className="flex items-center gap-1.5">
@@ -246,7 +273,27 @@ export default function Landing() {
           >
             <MicroLabel>An endless feed of GitHub projects</MicroLabel>
             <h1 className="mt-6 text-4xl font-semibold tracking-[-0.03em] text-balance sm:text-5xl lg:text-6xl">
-              Social media, but for GitHub.
+              Social media, but for{" "}
+              <span className="relative inline-block">
+                GitHub.
+                <svg
+                  aria-hidden
+                  viewBox="0 0 220 12"
+                  preserveAspectRatio="none"
+                  className="absolute -bottom-1 left-0 h-2.5 w-full overflow-visible"
+                >
+                  <motion.path
+                    d="M2 8 C 42 2, 82 11, 120 5 S 192 2, 218 7"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.5"
+                    strokeLinecap="round"
+                    initial={{ pathLength: 0, opacity: 0 }}
+                    animate={{ pathLength: 1, opacity: 1 }}
+                    transition={{ duration: 0.9, delay: 0.55, ease: "easeInOut" }}
+                  />
+                </svg>
+              </span>
             </h1>
             <p className="mt-6 max-w-xl text-base leading-relaxed text-muted-foreground">
               Scroll projects instead of posts. Rate what you like, save what
@@ -261,6 +308,19 @@ export default function Landing() {
             <p className="mt-5 text-xs text-muted-foreground">
               Sign up or log in with an email code · Built for one person: you
             </p>
+            <div className="mt-8 flex flex-wrap items-center gap-2">
+              <span className="mr-1 font-mono text-[11px] tracking-[0.16em] text-muted-foreground uppercase">
+                Already in the feed
+              </span>
+              {TOPIC_TAGS.map((topic) => (
+                <span
+                  key={topic}
+                  className="rounded-full border border-border px-2.5 py-1 font-mono text-[11px] text-muted-foreground transition-colors hover:border-foreground/40 hover:text-foreground"
+                >
+                  {topic}
+                </span>
+              ))}
+            </div>
           </motion.div>
 
           {/* Feed preview */}
@@ -276,9 +336,13 @@ export default function Landing() {
                 Live from GitHub · 2 of 2 rated
               </span>
             </div>
-            <div className="mx-auto max-w-2xl space-y-6">
-              {PREVIEW_CARDS.map((card) => (
-                <PreviewCard key={card.name} card={card} />
+            <div className="mx-auto max-w-2xl space-y-6 sm:space-y-8">
+              {PREVIEW_CARDS.map((card, i) => (
+                <PreviewCard
+                  key={card.name}
+                  card={card}
+                  tilt={i === 0 ? "-rotate-[0.5deg]" : "rotate-[0.6deg]"}
+                />
               ))}
             </div>
             <p className="mt-6 text-center text-[11px] text-muted-foreground">
@@ -341,12 +405,12 @@ export default function Landing() {
         <section className="border-t border-border">
           <div className="mx-auto grid w-full max-w-5xl gap-12 px-6 py-20 sm:py-24 lg:grid-cols-2 lg:gap-20">
             <div>
-              <MicroLabel>In version 1</MicroLabel>
+              <MicroLabel>In Gitbook today</MicroLabel>
               <h2 className="mt-5 text-2xl font-semibold tracking-[-0.02em] text-balance sm:text-3xl">
                 Small on purpose.
               </h2>
               <p className="mt-4 text-sm leading-relaxed text-muted-foreground">
-                Version 1 does one thing well: it shows you projects from GitHub
+                Gitbook does one thing well: it shows you projects from GitHub
                 and lets you rate them.
               </p>
               <ul className="mt-8 divide-y divide-border border-y border-border">
@@ -408,8 +472,11 @@ export default function Landing() {
       </main>
 
       <footer className="border-t border-border">
-        <div className="mx-auto flex w-full max-w-5xl items-center px-6 py-8">
+        <div className="mx-auto flex w-full max-w-5xl flex-wrap items-center justify-between gap-3 px-6 py-8">
           <Wordmark />
+          <p className="font-mono text-[11px] tracking-[0.08em] text-muted-foreground">
+            Made by someone who reads READMEs for fun.
+          </p>
         </div>
       </footer>
     </div>
