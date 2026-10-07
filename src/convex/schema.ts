@@ -225,6 +225,38 @@ const schema = defineSchema(
       recent: v.optional(v.array(v.string())),
       updatedAt: v.number(),
     }).index("by_user", ["userId"]),
+
+    // Persisted per-user recommendation queue. The generator action fills it
+    // in batches; serving reads the lowest ranks and deletes on consume, so
+    // the hot path is bounded by QUEUE_CAP rows, never the catalog. Reasons
+    // and sources are stored with each card — no recomputation at serve time.
+    feedQueue: defineTable({
+      userId: v.id("users"),
+      repoId: v.number(),
+      rank: v.number(),
+      score: v.number(),
+      reasons: v.array(v.string()),
+      sources: v.array(v.string()),
+      generatedAt: v.number(),
+    })
+      .index("by_user_rank", ["userId", "rank"])
+      .index("by_user_repo", ["userId", "repoId"]),
+
+    // Last-generation instrumentation per user (observability + client
+    // replenish decisions). One small document, upserted per generation.
+    queueMeta: defineTable({
+      userId: v.id("users"),
+      depth: v.number(),
+      lastGeneratedAt: v.optional(v.number()),
+      lastDurationMs: v.optional(v.number()),
+      lastPoolSize: v.optional(v.number()),
+      lastCoverage: v.optional(v.number()),
+      lastCounts: v.optional(
+        v.array(v.object({ key: v.string(), count: v.number() })),
+      ),
+      profileVersion: v.number(),
+      updatedAt: v.number(),
+    }).index("by_user", ["userId"]),
   },
   {
     schemaValidation: false,

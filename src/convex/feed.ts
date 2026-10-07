@@ -429,7 +429,7 @@ import {
 } from "./recommender/profile";
 
 /** Convert a `repos` document to the ranking boundary shape. */
-function toSnapshot(repo: Doc<"repos">): RepoSnapshot {
+export function toSnapshot(repo: Doc<"repos">): RepoSnapshot {
   return {
     repoId: repo.repoId,
     fullName: repo.fullName,

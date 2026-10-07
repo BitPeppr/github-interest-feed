@@ -11,6 +11,7 @@ import { Loading } from "@/components/feed/loading";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { api } from "@/convex/_generated/api";
+import type { QueuedCard } from "@/components/feed/types";
 import { errorText } from "@/lib/format";
 
 /**
@@ -58,11 +59,16 @@ const WARM_RETRY_DELAY_MS = 4_000;
 const WARM_TTL_MS = 60_000;
 
 const FETCH_COOLDOWN_MS = 8_000;
-const DISCOVERY_LIMIT = 24;
+/** Regenerate at most this often no matter how shallow the queue gets. */
+const GENERATE_COOLDOWN_MS = 30_000;
+/** Cards per peek; the serving read stays bounded by this. */
+const QUEUE_PEEK = 48;
 const KEEP_PREVIOUS = 4;
 const PRUNE_AFTER = 8;
 /** Only report dwell that clears this bar — short scrolls are not interest. */
 const DWELL_REPORT_MS = 3_000;
+/** Ask for more cards while this many (or fewer) remain queued server-side. */
+const QUEUE_LOW_WATER = 10;
 
 /**
  * Keeps the README subscription and hero image of the next few cards warm, so
@@ -92,12 +98,17 @@ export default function Feed() {
   const [savedOverrides, setSavedOverrides] = useState<Map<number, boolean>>(
     () => new Map(),
   );
+  const [cards, setCards] = useState<Map<number, QueuedCard>>(() => new Map());
+  const [exhausted, setExhausted] = useState(false);
   const [isFetching, setIsFetching] = useState(false);
+  const [isGenerating, setIsGenerating] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const [direction, setDirection] = useState(1);
 
   const fetching = useRef(false);
+  const generating = useRef(false);
   const lastFetch = useRef(0);
+  const lastGenerate = useRef(0);
   const seen = useRef(new Set<number>());
   const queued = useRef(new Set<number>());
   const touchStart = useRef<number | null>(null);
@@ -106,27 +117,20 @@ export default function Feed() {
   const warmBatchesInFlight = useRef(0);
   const warmAttempts = useRef(new Map<number, number>());
 
-  const shouldDiscover = ids.length === 0 || activeIndex >= ids.length - 5;
-  const discovery = useQuery(
-    api.feed.discovery,
-    shouldDiscover
-      ? { excludeRepoIds: [...ids, ...excluded], limit: DISCOVERY_LIMIT }
-      : "skip",
-  );
+  // The persisted queue is the feed now: one bounded read, no catalog scan.
+  const served = useQuery(api.queue.peek, { limit: QUEUE_PEEK });
   const repoId = ids[activeIndex];
-  // Metadata for the next few cards is fetched up front too, so advancing
-  // never lands on a "Loading project…" placeholder.
+  // Metadata for the next few cards is kept subscribed too, so advancing never
+  // lands on a "Loading project…" placeholder.
   const upcomingIds = ids.slice(
     activeIndex + 1,
     activeIndex + 1 + PREFETCH_AHEAD,
   );
-  const projects = useQuery(
-    api.feed.projects,
-    repoId === undefined ? "skip" : { repoIds: [repoId, ...upcomingIds] },
-  );
-  const project = projects?.items.find((item) => item.repoId === repoId);
-  // Shares the prefetch buffer's subscription, so on every card change this
-  // resolves synchronously instead of starting a fresh query round-trip.
+  // Card payloads ride along with the queue, so advancing is a map lookup
+  // rather than a fresh metadata query per card.
+  const project = repoId === undefined ? undefined : cards.get(repoId);
+  // The README still loads lazily per card; the warm queue below pre-fetches
+  // the enrichment so this resolves from cache by the time it is rendered.
   const readmeData = useQuery(
     api.feed.readme,
     repoId === undefined ? "skip" : { repoId },
@@ -138,7 +142,9 @@ export default function Feed() {
   const setSaved = useMutation(api.feed.setSaved);
   const setHidden = useMutation(api.feed.setHidden);
   const trackEvent = useMutation(api.feed.trackEvent);
+  const consume = useMutation(api.queue.consume);
   const fetchMore = useAction(api.github.fetchMore);
+  const generate = useAction(api.queue.generate);
   const enrich = useAction(api.github.enrich);
 
   /**
@@ -188,25 +194,38 @@ export default function Feed() {
     [enrich],
   );
 
+  // Accumulate served cards locally; consumed rows vanish from `peek`, so the
+  // client cache is what keeps back-navigation working.
   useEffect(() => {
-    if (!shouldDiscover || !discovery) return;
-    const additions = discovery.repoIds.filter(
-      (id) => !queued.current.has(id) && !excluded.has(id),
+    if (!served) return;
+    const additions = served.cards.filter(
+      (card) => !queued.current.has(card.repoId) && !excluded.has(card.repoId),
     );
     if (!additions.length) return;
-    additions.forEach((id) => queued.current.add(id));
-    // Warm the whole batch in the background right now, so cards are ready
+    additions.forEach((card) => queued.current.add(card.repoId));
+    // Warm the whole batch in the background right now, so READMEs are ready
     // long before the viewer reaches them.
     const expiresAt = Date.now() + WARM_TTL_MS;
-    warmQueue.current.push(...additions.map((id) => ({ id, expiresAt })));
+    warmQueue.current.push(
+      ...additions.map((card) => ({ id: card.repoId, expiresAt })),
+    );
     drainWarmQueue();
-    // Append synchronously: a deferred append could be cancelled by a dep
-    // change after `queued` was marked, losing these ids for good.
+    // Update synchronously: a deferred update could be cancelled by a dep
+    // change after `queued` was marked, losing these cards for good.
+    setCards((current) => {
+      const next = new Map(current);
+      for (const card of additions) {
+        if (!next.has(card.repoId)) next.set(card.repoId, card);
+      }
+      return next;
+    });
     setIds((current) => [
       ...current,
-      ...additions.filter((id) => !current.includes(id)),
+      ...additions
+        .map((card) => card.repoId)
+        .filter((id) => !current.includes(id)),
     ]);
-  }, [discovery, drainWarmQueue, excluded, shouldDiscover]);
+  }, [served, drainWarmQueue, excluded]);
 
   const loadMore = useCallback(
     async (force = false) => {
@@ -216,9 +235,12 @@ export default function Feed() {
       lastFetch.current = Date.now();
       setIsFetching(true);
       setProblem(null);
+      setExhausted(false);
       try {
         const result = await fetchMore({ count: 2 });
         if (result.errors.length) setProblem(result.errors[0].message);
+        // Fresh catalog rows need a queue batch before they can be served.
+        void generate({}).catch(() => {});
       } catch (error) {
         setProblem(errorText(error));
       } finally {
@@ -226,27 +248,94 @@ export default function Feed() {
         setIsFetching(false);
       }
     },
-    [fetchMore],
+    [fetchMore, generate],
   );
+
+  const refill = useCallback(
+    async (force = false) => {
+      if (generating.current) return;
+      if (!force && Date.now() - lastGenerate.current < GENERATE_COOLDOWN_MS) {
+        return;
+      }
+      generating.current = true;
+      lastGenerate.current = Date.now();
+      setIsGenerating(true);
+      try {
+        const result = await generate({});
+        // Nothing new and nothing queued: the catalog is fully explored.
+        // Stay quiet until fresh ingestion arrives (which resets this).
+        if (result.generated === 0 && result.depth === 0) {
+          setExhausted(true);
+        }
+      } catch (error) {
+        setProblem(errorText(error));
+      } finally {
+        generating.current = false;
+        setIsGenerating(false);
+      }
+    },
+    [generate],
+  );
+
+  // Replenish in the background while the queue runs shallow. Empty catalog
+  // means ingestion first (the loadMore path generates afterwards). An
+  // exhausted catalog stays quiet until fresh projects arrive.
+  useEffect(() => {
+    if (!served || isFetching || isGenerating || problem || exhausted) return;
+    if (served.catalogEmpty && served.depth === 0 && ids.length === 0) {
+      const timer = window.setTimeout(() => void loadMore(), 0);
+      return () => window.clearTimeout(timer);
+    }
+    if (
+      !served.catalogEmpty &&
+      served.depth <= QUEUE_LOW_WATER &&
+      activeIndex >= ids.length - 5
+    ) {
+      const timer = window.setTimeout(() => void refill(), 0);
+      return () => window.clearTimeout(timer);
+    }
+    return undefined;
+  }, [
+    served,
+    isFetching,
+    isGenerating,
+    problem,
+    exhausted,
+    ids.length,
+    activeIndex,
+    loadMore,
+    refill,
+  ]);
 
   const next = useCallback(() => {
     if (activeIndex >= ids.length - 1) return;
+    const leaving = ids[activeIndex];
+    if (leaving !== undefined)
+      void consume({ repoIds: [leaving] }).catch(() => {});
     setDirection(1);
     const newIndex = activeIndex + 1;
     setActiveIndex(newIndex);
     if (newIndex >= PRUNE_AFTER) {
       const removed = ids.slice(0, KEEP_PREVIOUS);
-      setPreviousIds((previous) => [
-        ...previous.slice(-KEEP_PREVIOUS),
-        ...removed,
-      ]);
-      setIds((current) => current.slice(KEEP_PREVIOUS));
+      const keptPrevious = [...previousIds.slice(-KEEP_PREVIOUS), ...removed];
+      const keptIds = ids.slice(KEEP_PREVIOUS);
+      setPreviousIds(keptPrevious);
+      setIds(keptIds);
+      // Drop cached cards that are no longer reachable either way.
+      setCards((current) => {
+        const reachable = new Set([...keptIds, ...keptPrevious]);
+        const nextCards = new Map(current);
+        for (const key of nextCards.keys()) {
+          if (!reachable.has(key)) nextCards.delete(key);
+        }
+        return nextCards;
+      });
       setActiveIndex(newIndex - KEEP_PREVIOUS);
       setBaseIndex((current) => current + KEEP_PREVIOUS);
     }
     // Every card starts from its top, however tall the last one was.
     window.scrollTo(0, 0);
-  }, [activeIndex, ids]);
+  }, [activeIndex, ids, previousIds, consume]);
 
   const previous = useCallback(() => {
     if (activeIndex === 0 && previousIds.length === 0) return;
@@ -302,19 +391,6 @@ export default function Feed() {
     document.addEventListener("visibilitychange", onVisibility);
     return () => document.removeEventListener("visibilitychange", onVisibility);
   }, [repoId]);
-
-  useEffect(() => {
-    if (
-      !shouldDiscover ||
-      !discovery ||
-      discovery.repoIds.length > 0 ||
-      isFetching ||
-      problem
-    )
-      return;
-    const timer = window.setTimeout(() => void loadMore(), 0);
-    return () => window.clearTimeout(timer);
-  }, [discovery, isFetching, loadMore, problem, shouldDiscover]);
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
@@ -378,6 +454,7 @@ export default function Feed() {
     (id: number) => {
       setExcluded((current) => new Set(current).add(id));
       setIds((current) => current.filter((currentId) => currentId !== id));
+      void consume({ repoIds: [id] }).catch(() => {});
       void setHidden({ repoId: id, hidden: true })
         .then(() =>
           setExcluded((current) => {
@@ -388,9 +465,10 @@ export default function Feed() {
         )
         .catch((error) => toast.error(errorText(error)));
     },
-    [setHidden],
+    [setHidden, consume],
   );
 
+  const busy = isFetching || isGenerating;
   const error = problem ? (
     <div className="mb-4 flex items-center justify-between gap-3 rounded-lg border border-border px-3 py-2 text-xs">
       <span className="text-muted-foreground">{problem}</span>
@@ -446,7 +524,7 @@ export default function Feed() {
             <span className="text-foreground">
               {baseIndex + activeIndex + 1}
             </span>{" "}
-            explored · {discovery?.rated ?? 0} rated
+            explored · {served?.rated ?? 0} rated
           </p>
         </div>
         {/* The buffer holds a subscription for the current card too, so the
@@ -456,7 +534,7 @@ export default function Feed() {
             <PrefetchRepo key={id} repoId={id} />
           ),
         )}
-        {(discovery?.rated ?? 0) < 8 && (
+        {(served?.rated ?? 0) < 8 && (
           <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border px-4 py-3">
             <div className="min-w-0">
               <p className="text-sm font-medium">Bring your taste with you</p>
@@ -471,17 +549,19 @@ export default function Feed() {
         {error}
 
         <div className="flex flex-1 flex-col justify-center">
-          {ids.length === 0 && discovery === undefined ? (
+          {ids.length === 0 && served === undefined ? (
             <Loading label="Finding your next project…" />
           ) : repoId === undefined ? (
             <div className="flex min-h-[55vh] flex-col items-center justify-center gap-3 text-center">
-              {isFetching && <Spinner className="size-5" />}
+              {busy && <Spinner className="size-5" />}
               <p className="text-sm text-muted-foreground">
-                {isFetching
+                {busy
                   ? "Finding projects for you…"
-                  : "No projects ready yet."}
+                  : exhausted
+                    ? "You're all caught up — every discovered project explored."
+                    : "No projects ready yet."}
               </p>
-              {!isFetching && (
+              {!busy && (
                 <Button onClick={() => void loadMore(true)}>
                   Find projects
                 </Button>
@@ -523,7 +603,7 @@ export default function Feed() {
           )}
         </div>
 
-        {isFetching && repoId !== undefined && (
+        {busy && repoId !== undefined && (
           <p className="mt-2 text-center text-xs text-muted-foreground">
             <Spinner className="mr-2 inline size-3.5" />
             Finding more projects…

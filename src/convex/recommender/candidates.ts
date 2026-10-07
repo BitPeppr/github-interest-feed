@@ -210,3 +210,112 @@ export function assembleFeed(
 
   return { window, unseenCount: unseen.length };
 }
+
+/* ------------------------------------------------------------------ *
+ * Shared generator pieces (also used by the queue planner, PR4)       *
+ * ------------------------------------------------------------------ */
+
+/** A repository with the provenance of the generators that surfaced it. */
+export interface SourcedRepo {
+  repo: RepoSnapshot;
+  sources: CandidateSource[];
+}
+
+/** Drop archived, already-touched and explicitly excluded repositories. */
+export function filterUnseen(
+  catalog: RepoSnapshot[],
+  touched: Set<number>,
+  excluded: Set<number>,
+): RepoSnapshot[] {
+  return catalog.filter(
+    (repo) =>
+      !repo.archived && !touched.has(repo.repoId) && !excluded.has(repo.repoId),
+  );
+}
+
+function withSource(
+  repos: RepoSnapshot[],
+  source: CandidateSource,
+  cap: number,
+): SourcedRepo[] {
+  return repos
+    .sort((a, b) => b.stars - a.stars || a.repoId - b.repoId)
+    .slice(0, Math.max(0, cap))
+    .map((repo) => ({ repo, sources: [source] }));
+}
+
+/** Repositories matching learned affinity or explicitly followed topics. */
+export function topicMatchedRepos(
+  unseen: RepoSnapshot[],
+  signals: Signals,
+  followedTopics: Set<string> | undefined,
+  cap: number,
+): SourcedRepo[] {
+  const matched = unseen.filter((repo) => {
+    if (
+      repo.topics.some((topic) => (signals.topicAffinity.get(topic) ?? 0) > 0)
+    ) {
+      return true;
+    }
+    if (
+      repo.language &&
+      (signals.languageAffinity.get(repo.language) ?? 0) > 0
+    ) {
+      return true;
+    }
+    if ((signals.ownerAffinity.get(repo.owner) ?? 0) > 0) return true;
+    return (
+      followedTopics !== undefined &&
+      repo.topics.some((topic) => followedTopics.has(topic))
+    );
+  });
+  return withSource(matched, "topic", cap);
+}
+
+/** Recently pushed repositories (activity, not just novelty for its own sake). */
+export function freshRepos(
+  unseen: RepoSnapshot[],
+  now: number,
+  cap: number,
+  windowDays = FRESH_WINDOW_DAYS,
+): SourcedRepo[] {
+  const cutoff = now - windowDays * 86_400_000;
+  const fresh = unseen.filter(
+    (repo) => repo.pushedAt !== undefined && repo.pushedAt >= cutoff,
+  );
+  return withSource(fresh, "fresh", cap);
+}
+
+/** Smaller projects above the noise floor — the long tail must stay reachable. */
+export function longTailRepos(
+  unseen: RepoSnapshot[],
+  cap: number,
+  threshold = LONG_TAIL_STAR_THRESHOLD,
+): SourcedRepo[] {
+  return withSource(
+    unseen.filter((repo) => repo.stars < threshold),
+    "long-tail",
+    cap,
+  );
+}
+
+/** Merge sourced lists, unioning provenance for duplicates. */
+export function dedupeSourced(lists: SourcedRepo[][]): SourcedRepo[] {
+  const byId = new Map<number, SourcedRepo>();
+  for (const list of lists) {
+    for (const entry of list) {
+      const existing = byId.get(entry.repo.repoId);
+      if (!existing) {
+        byId.set(entry.repo.repoId, {
+          repo: entry.repo,
+          sources: [...entry.sources],
+        });
+        continue;
+      }
+      for (const source of entry.sources) {
+        if (!existing.sources.includes(source)) existing.sources.push(source);
+      }
+    }
+  }
+  return [...byId.values()];
+}

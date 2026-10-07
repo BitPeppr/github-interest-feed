@@ -69,6 +69,15 @@ export const DEFAULT_WEIGHTS: RankingWeights = {
   longTail: 0,
 };
 
+/* Provisional semantic weights. They are inert until embeddings exist
+ * (features default to 0), and PR5 tunes them against the offline harness. */
+export const SEMANTIC_WEIGHTS: RankingWeights = {
+  ...DEFAULT_WEIGHTS,
+  semanticBest: 1.5,
+  semanticWeighted: 0.5,
+  negativeSimilarity: -1.0,
+};
+
 /** Feature-level caps. Counts stop mattering after a few repetitions. */
 export const AFFINITY_COUNT_CAP = 3;
 
@@ -201,3 +210,30 @@ export const FEATURE_KEYS: (keyof RankingFeatures)[] = [
   "firstSighting",
   "longTail",
 ];
+
+/* ------------------------- queue serving (PR4) ------------------------ */
+
+/** Per-generator caps inside one queue-generation pass. */
+export const GEN_TOPIC_CAP = 60;
+export const GEN_FRESH_CAP = 40;
+export const GEN_LONGTAIL_CAP = 40;
+export const GEN_EXPLORE_SEEDS = 12;
+export const GEN_POOL = 400;
+/** Cards persisted per generation pass. */
+export const GEN_BATCH = 30;
+/** Replenish when fewer than this many cards remain queued. */
+export const QUEUE_LOW_WATER = 10;
+/** Never persist more than this many queued cards per user. */
+export const QUEUE_CAP = 120;
+/** Vector-search hits kept per interest cluster... */
+export const SEMANTIC_PER_CLUSTER = 25;
+/** ...of which the top slice is "too close" and the rest is adjacent. */
+export const ADJACENT_SKIP_TOP = 15;
+export const ADJACENT_PER_CLUSTER = 30;
+/** Top metadata candidates that also get vectors for rescoring. */
+export const METADATA_VECTOR_FETCH = 100;
+/** Chunk sizes for bounded action-side reads. */
+export const CATALOG_PAGE = 2000;
+export const VECTOR_FETCH_CHUNK = 50;
+/** Upper bound on the generation scan; beyond this, shard by cursor. */
+export const GENERATION_SCAN_CAP = 20000;
