@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
-import { Bookmark, GitFork, Loader2, Star } from "lucide-react";
+import { Bookmark, GitFork, Star } from "lucide-react";
 import { Link } from "react-router";
 
 import { Wordmark } from "@/components/wordmark";
@@ -198,39 +198,11 @@ function MicroLabel({ children }: { children: React.ReactNode }) {
   );
 }
 
-/**
- * The main call to action. While the session is still resolving it renders a
- * spinner instead of a label, and both states reserve the same width, so the
- * page never changes its mind about whether you are signed in.
- */
-function PrimaryCta({
-  isLoading,
-  href,
-  label,
-}: {
-  isLoading: boolean;
-  href: string;
-  label: string;
-}) {
-  if (isLoading) {
-    return (
-      <Button size="lg" disabled className="min-w-[188px]">
-        <Loader2 className="size-4 animate-spin" />
-        <span className="sr-only">Checking your session…</span>
-      </Button>
-    );
-  }
-  return (
-    <Button size="lg" className="min-w-[188px]" asChild>
-      <Link to={href}>{label}</Link>
-    </Button>
-  );
-}
-
 export default function Landing() {
-  const { user, isLoading, isAuthenticated, signOut } = useAuth();
-  const primaryHref = isAuthenticated ? "/feed" : FEED_PATH;
-  const primaryLabel = isAuthenticated ? "Open your feed" : "Create your account";
+  const { user, isAuthenticated, signOut } = useAuth();
+  // One destination for the one call to action: straight in when signed in,
+  // through the auth page (which returns you to /feed) when signed out.
+  const exploreHref = isAuthenticated ? "/feed" : FEED_PATH;
 
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -240,60 +212,19 @@ export default function Landing() {
             <Wordmark nameClassName="hidden sm:inline" />
           </Link>
           <nav className="flex items-center gap-1.5">
-            <Button
-              variant="ghost"
-              size="sm"
-              className="hidden text-muted-foreground hover:text-foreground md:inline-flex"
-              asChild
-            >
-              <Link to="/feed">Explore</Link>
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="hidden text-muted-foreground hover:text-foreground sm:inline-flex"
-              asChild
-            >
-              <a href="#how">How it works</a>
-            </Button>
-            {isLoading ? (
-              <span
-                aria-hidden
-                className="flex h-8 w-[124px] items-center justify-center"
+            {user?.isAnonymous === true && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-muted-foreground hover:text-foreground"
+                onClick={() => void signOut()}
               >
-                <Loader2 className="size-4 animate-spin text-muted-foreground" />
-              </span>
-            ) : !isAuthenticated ? (
-              <>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="text-muted-foreground hover:text-foreground"
-                  asChild
-                >
-                  <Link to={FEED_PATH}>Sign in</Link>
-                </Button>
-                <Button size="sm" asChild>
-                  <Link to={primaryHref}>{primaryLabel}</Link>
-                </Button>
-              </>
-            ) : (
-              <>
-                {user?.isAnonymous && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="text-muted-foreground hover:text-foreground"
-                    onClick={() => void signOut()}
-                  >
-                    Exit guest mode
-                  </Button>
-                )}
-                <Button size="sm" asChild>
-                  <Link to={primaryHref}>{primaryLabel}</Link>
-                </Button>
-              </>
+                Exit guest mode
+              </Button>
             )}
+            <Button size="sm" asChild>
+              <Link to={exploreHref}>Explore</Link>
+            </Button>
           </nav>
         </div>
       </header>
@@ -317,10 +248,9 @@ export default function Landing() {
               There is no timeline to keep up with and no algorithm you cannot
               read.
             </p>
-            <div className="mt-8 flex flex-wrap items-center gap-3">
-              <PrimaryCta isLoading={isLoading} href={primaryHref} label={primaryLabel} />
-              <Button size="lg" variant="outline" asChild>
-                <a href="#how">See how it works</a>
+            <div className="mt-8">
+              <Button size="lg" asChild>
+                <Link to={exploreHref}>Explore</Link>
               </Button>
             </div>
             <p className="mt-5 text-xs text-muted-foreground">
@@ -464,7 +394,9 @@ export default function Landing() {
               would have chosen yourself.
             </p>
             <div className="mt-8 flex justify-center">
-              <PrimaryCta isLoading={isLoading} href={primaryHref} label={primaryLabel} />
+              <Button size="lg" asChild>
+                <Link to={exploreHref}>Explore</Link>
+              </Button>
             </div>
           </div>
         </section>
