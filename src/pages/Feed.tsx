@@ -43,6 +43,8 @@ function atScrollBottom() {
 const PREFETCH_AHEAD = 6;
 /** Background enrichment batches, matching the action's per-call cap. */
 const WARM_BATCH = 6;
+/** Warm batches run a few at a time so a backlog fills in seconds, not minutes. */
+const WARM_CONCURRENCY = 3;
 /** Give a failed warm batch a couple of retries before giving up on it. */
 const WARM_RETRIES = 2;
 const WARM_RETRY_DELAY_MS = 4_000;
@@ -89,7 +91,7 @@ export default function Feed() {
   const touchStart = useRef<number | null>(null);
   const lastWheel = useRef(0);
   const warmQueue = useRef<number[]>([]);
-  const warmInFlight = useRef(false);
+  const warmBatchesInFlight = useRef(0);
   const warmAttempts = useRef(new Map<number, number>());
 
   const shouldDiscover = ids.length === 0 || activeIndex >= ids.length - 5;
@@ -108,6 +110,9 @@ export default function Feed() {
     repoId === undefined ? "skip" : { repoIds: [repoId, ...upcomingIds] },
   );
   const project = projects?.items.find((item) => item.repoId === repoId);
+  // Shares the prefetch buffer's subscription, so on every card change this
+  // resolves synchronously instead of starting a fresh query round-trip.
+  const readmeData = useQuery(api.feed.readme, repoId === undefined ? "skip" : { repoId });
 
   const markSeen = useMutation(api.feed.markSeen);
   const setRating = useMutation(api.feed.setRating);
@@ -122,30 +127,31 @@ export default function Feed() {
    * batches, running the moment projects enter the feed — never waiting for
    * the viewer to scroll near them. Failed batches are retried a few times.
    */
-  const drainWarmQueue = useCallback(() => {
-    if (warmInFlight.current) return;
-    warmInFlight.current = true;
-    void (async () => {
-      try {
-        while (warmQueue.current.length > 0) {
-          const batch = warmQueue.current.splice(0, WARM_BATCH);
-          try {
-            await enrich({ repoIds: batch });
-          } catch {
-            for (const id of batch) {
-              const attempts = (warmAttempts.current.get(id) ?? 0) + 1;
-              if (attempts <= WARM_RETRIES) {
-                warmAttempts.current.set(id, attempts);
-                warmQueue.current.push(id);
-              }
+  const drainWarmQueue = useCallback(function drain() {
+    while (
+      warmBatchesInFlight.current < WARM_CONCURRENCY &&
+      warmQueue.current.length > 0
+    ) {
+      const batch = warmQueue.current.splice(0, WARM_BATCH);
+      warmBatchesInFlight.current += 1;
+      void (async () => {
+        try {
+          await enrich({ repoIds: batch });
+        } catch {
+          for (const id of batch) {
+            const attempts = (warmAttempts.current.get(id) ?? 0) + 1;
+            if (attempts <= WARM_RETRIES) {
+              warmAttempts.current.set(id, attempts);
+              warmQueue.current.push(id);
             }
-            await new Promise((resolve) => setTimeout(resolve, WARM_RETRY_DELAY_MS));
           }
+          await new Promise((resolve) => setTimeout(resolve, WARM_RETRY_DELAY_MS));
+        } finally {
+          warmBatchesInFlight.current -= 1;
+          if (warmQueue.current.length > 0) drain();
         }
-      } finally {
-        warmInFlight.current = false;
-      }
-    })();
+      })();
+    }
   }, [enrich]);
 
   useEffect(() => {
@@ -330,7 +336,9 @@ export default function Feed() {
             {discovery?.rated ?? 0} rated
           </p>
         </div>
-        {upcomingIds.map((id) => (
+        {/* The buffer holds a subscription for the current card too, so the
+            handoff at each card change keeps its README result warm. */}
+        {[...(repoId === undefined ? [] : [repoId]), ...upcomingIds].map((id) => (
           <PrefetchRepo key={id} repoId={id} />
         ))}
         {error}
@@ -346,7 +354,9 @@ export default function Feed() {
               </p>
               {!isFetching && <Button onClick={() => void loadMore(true)}>Find projects</Button>}
             </div>
-          ) : !project ? (
+          ) : !project || readmeData === undefined ? (
+            // Never render a half-built card: wait for the README payload so
+            // the card appears with its image and text already in place.
             <Loading label="Loading project…" />
           ) : (
             <div className="mx-auto flex min-h-[65vh] w-full max-w-3xl items-center">
