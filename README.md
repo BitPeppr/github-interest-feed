@@ -1,293 +1,97 @@
-## Overview
+# Gitbook
 
-This project uses the following tech stack:
-- Vite
-- Typescript
-- React Router v7 (all imports from `react-router` instead of `react-router-dom`)
-- React 19 (for frontend components)
-- Tailwind v4 (for styling)
-- Shadcn UI (for UI components library)
-- Lucide Icons (for icons)
-- Convex (for backend & database)
-- Convex Auth (for authentication)
-- Framer Motion (for animations)
-- Three js (for 3d models)
+**Social media, but for GitHub.**
 
-All relevant files live in the 'src' directory.
+Gitbook is an endless feed of real open-source projects, one card at a time. Instead of posts, you scroll projects — each card arrives with its description, screenshots and README. Rate what you like, save what you'll come back to, skip the rest, and the feed quietly becomes yours.
 
-Use bun for the package manager.
+There is no timeline to keep up with, nothing to post, and no algorithm you can't see the shape of. It is built for one person: you.
 
-## Setup
+## What it does
 
-This project is set up already and running on a cloud environment, as well as a convex development in the sandbox.
+### The feed (Explore)
 
-## Environment Variables
+- **One project at a time.** A reels-style feed drawing from all of GitHub, not a catalog page. Scroll, swipe or use the arrow keys; the next card is always ready before you reach it.
+- **Every card is substantial.** Owner, description, stars, forks, license, last activity, topics — plus the first screenshot from the README and a preview of the README itself, inline on the card.
+- **Full README on demand.** When the preview isn't enough, the complete document opens in a wide dialog — rendered safely, with images, code blocks and tables.
+- **Rate in about a second.** A 1–5 interest scale on every card. Rating advances straight to the next project.
+- **Save or skip.** Bookmark the keepers, dismiss the rest — and both decisions teach the feed.
 
-The project is set up with project specific CONVEX_DEPLOYMENT and VITE_CONVEX_URL environment variables on the client side.
+### Your library (Saved)
 
-The convex server has a separate set of environment variables that are accessible by the convex backend.
+Everything you bookmarked in one list: re-rate it, open it on GitHub, or remove it. Ratings and saves are yours alone.
 
-Currently, these variables include auth-specific keys: JWKS, JWT_PRIVATE_KEY, and SITE_URL.
+### A feed that learns
 
+The ranking is a small, legible system — roughly the shape of a modern social feed's recommender, adapted for repositories:
 
-# Using Authentication (Important!)
+- **Taste, not just topics.** The topics, languages and authors you rate highly pull more of the same toward the top.
+- **Negative signals count double.** A skip says more than a like: skips and 1–2 ratings push their topics, languages and authors down — decisively.
+- **A slice reserved for discovery.** Every window keeps exploration slots for corners of GitHub you've never met, chosen from facets you've barely been shown. The slice cools down as the feed learns you.
+- **Freshness over fame.** Star counts are capped in the score and recency fades with a half-life, so a brand-new zero-star gem can stand next to a 20k-star classic.
+- **One ecosystem can't own your feed.** The window reranker penalises near-duplicate projects and decays repeated owners and languages, so a single project type can't flood the screen.
 
-You must follow these conventions when using authentication.
+### Accounts
 
-## Auth is already set up.
+Sign up or log in with an email code, or start rating immediately as a guest. Either way you get a personal feed; the ratings you leave are what shape it.
 
-All convex authentication functions are already set up. The auth currently uses email OTP and anonymous users, but can support more.
+## Try it
 
-The email OTP configuration is defined in `src/convex/auth/emailOtp.ts`. DO NOT MODIFY THIS FILE.
+1. Sign in with an email code (or continue as a guest).
+2. Scroll the feed — read the card, the README, whatever you need.
+3. Rate ten projects. That's all the feed needs to start looking like yours.
+4. Save the keepers; skip anything that isn't for you.
+5. Check **Saved** whenever you want to come back to something.
 
-Also, DO NOT MODIFY THESE AUTH FILES: `src/convex/auth.config.ts` and `src/convex/auth.ts`.
+---
 
-## Using Convex Auth on the backend
+# Architecture
 
-On the `src/convex/users.ts` file, you can use the `getCurrentUser` function to get the current user's data.
+- **Frontend:** Vite · React 19 · React Router v7 (import from `react-router`) · Tailwind CSS v4 · shadcn/ui · Lucide icons · Framer Motion · sonner
+- **Backend & database:** Convex (queries, mutations, actions) with Convex Auth (email OTP + anonymous guest sessions)
+- **Package manager:** Bun
 
-## Using Convex Auth on the frontend
+All source lives under `src/`:
 
-The `/auth` page is already set up to use auth. Navigate to `/auth` for all log in / sign up sequences.
+| Path | What lives there |
+| --- | --- |
+| `src/pages` | Landing, Feed (Explore), Dashboard (Saved), Auth |
+| `src/components` | App chrome (`app-header`, `wordmark`), feed cards, shadcn primitives in `ui/` |
+| `src/convex` | Schema, feed ranking (`feed.ts`), GitHub ingestion (`github.ts`), auth |
+| `src/lib` | Safe Markdown renderer for READMEs, formatting helpers |
 
-You MUST use this hook to get user data. Never do this yourself without the hook:
-```typescript
-import { useAuth } from "@/hooks/use-auth";
+# Implementation
 
-const { isLoading, isAuthenticated, user, signIn, signOut } = useAuth();
+## Where projects come from
+
+A shared Convex catalog stores repositories discovered through GitHub's search API (topic searches across a wide topic list, with rotating star bands so both small and famous projects surface). READMEs are pulled from GitHub's raw host — outside the API rate limit — and their embedded screenshots are extracted and kept with the repo, so cards can show a hero image without hot-linking a guess.
+
+## The ranking pipeline
+
+1. **Signals.** Every rating, save and skip becomes per-topic / per-language / per-author affinity (positive) or dislike (weighted heavier, negative).
+2. **Scoring.** A single weighted sum per candidate — capped stars, freshness half-life, max-topic affinity, dislikes, an optimism term for under-exposed facets, a first-sighting boost, and a stable per-project jitter.
+3. **Reranking.** A greedy pass assembles each window: Jaccard similarity between projects is penalised, repeated authors decay, and languages get a milder repeat decay.
+4. **Interleaving.** Reserved exploration picks are spread evenly through the window instead of bunching at the end.
+
+## No flash, no reflow
+
+Cards are taller than the viewport and render image + README inline, so the feed keeps a warm pipeline: discovery batches are enriched in the background the moment they arrive (with retries), a six-card buffer holds live README subscriptions and pre-decodes hero images, and cards only mount once their payload is ready — each post paints fully assembled.
+
+# Development
+
+```sh
+bun install
+bunx convex dev        # starts the Convex backend and runs codegen
+bun run dev            # starts the Vite dev server
 ```
 
-## Protected Routes
+Client environment variables (`CONVEX_DEPLOYMENT`, `VITE_CONVEX_URL`) are project-specific. The Convex deployment carries its own secrets (auth keys, and optionally `GITHUB_TOKEN` for higher GitHub API rate limits).
 
-The starter `/dashboard` route is protected with `RequireAuth`. Extend that page
-for the product's authenticated experience, and reuse `RequireAuth` when adding
-another protected route — do NOT hand-roll a redirect to `/auth`, since landing
-on a bare sign-in form with no explanation of what was blocked is confusing.
+# Contributing
 
-`RequireAuth` states the block on the page the visitor asked for and sends them
-to `/auth?returnTo=<current route>` when they choose to sign in, so they come
-back to it. Pass `title` and `description` to say what the page is:
+PRs and issues are welcome. The conventions that keep this codebase coherent:
 
-```tsx
-<Route
-  path="/dashboard"
-  element={
-    <RequireAuth
-      title="Sign in to view your dashboard"
-      description="Your projects and settings live here."
-    >
-      <Dashboard />
-    </RequireAuth>
-  }
-/>
-```
+**Auth** — the Convex auth files (`src/convex/auth.ts`, `auth.config.ts`, `auth/emailOtp.ts`) are fixed; don't modify them. Use `useAuth` from `@/hooks/use-auth` on the frontend and `getAuthUserId(ctx)` in every Convex function on the backend — the route guard is UX only, real authorization lives in the queries and mutations. New protected routes go behind `RequireAuth`, which explains the block and returns the user to the page they asked for.
 
-Pass `redirectImmediately` for a route where bouncing straight to `/auth` really
-is better.
+**Convex** — schema in `src/convex/schema.ts` with `schemaValidation: false`; use `Doc<"Table">` / `Id<"Table">` types, no return type validators, and handle null results. External calls (HTTP) belong in actions.
 
-## Auth Page
-
-The auth page is defined in `src/pages/Auth.tsx`. Send sign-in and sign-up actions
-to `/auth`.
-
-## Authorization
-
-You can perform authorization checks on the frontend and backend.
-
-On the frontend, you can use the `useAuth` hook to get the current user's data and authentication state.
-
-You should also be protecting queries, mutations, and actions at the base level, checking for authorization securely.
-
-## Adding a redirect after auth
-
-The `/auth` route in `src/main.tsx` redirects to `/dashboard` by default. If the
-product's main authenticated route is different, update `redirectAfterAuth` to
-that route. A validated same-origin `returnTo` query parameter takes priority so
-users can resume the protected page they originally requested. Never leave an
-authenticated product redirecting back to the public landing page.
-
-## Complete authenticated products
-
-When the requested product implies accounts, a workspace, a dashboard, or other
-signed-in functionality, the task is not complete with only a landing page and
-auth form. Build the main authenticated experience, protect its route, and verify
-that signing in reaches it.
-
-# Frontend Conventions
-
-You will be using the Vite frontend with React 19, Tailwind v4, and Shadcn UI.
-
-Generally, pages should be in the `src/pages` folder, and components should be in the `src/components` folder.
-
-Shadcn primitives are located in the `src/components/ui` folder and should be used by default.
-
-## Page routing
-
-Your page component should go under the `src/pages` folder.
-
-When adding a page, update the react router configuration in `src/main.tsx` to include the new route you just added.
-
-## Shad CN conventions
-
-Follow these conventions when using Shad CN components, which you should use by default.
-- Remember to use "cursor-pointer" to make the element clickable
-- For title text, use the "tracking-tight font-bold" class to make the text more readable
-- Always make apps MOBILE RESPONSIVE. This is important
-- AVOID NESTED CARDS. Try and not to nest cards, borders, components, etc. Nested cards add clutter and make the app look messy.
-- AVOID SHADOWS. Avoid adding any shadows to components. stick with a thin border without the shadow.
-- Avoid skeletons; instead, use the loader2 component to show a spinning loading state when loading data.
-
-
-## Landing Pages
-
-You must always create good-looking designer-level styles to your application. 
-- Make it well animated and fit a certain "theme", ie neo brutalist, retro, neumorphism, glass morphism, etc
-
-Use known images and emojis from online.
-
-If the user is logged in already, show the get started button to say "Dashboard" or "Profile" instead to take them there.
-
-## Responsiveness and formatting
-
-Make sure pages are wrapped in a container to prevent the width stretching out on wide screens. Always make sure they are centered aligned and not off-center.
-
-Always make sure that your designs are mobile responsive. Verify the formatting to ensure it has correct max and min widths as well as mobile responsiveness.
-
-- Always create sidebars for protected dashboard pages and navigate between pages
-- Always create navbars for landing pages
-- On these bars, the created logo should be clickable and redirect to the index page
-
-## Animating with Framer Motion
-
-You must add animations to components using Framer Motion. It is already installed and configured in the project.
-
-To use it, import the `motion` component from `framer-motion` and use it to wrap the component you want to animate.
-
-
-### Other Items to animate
-- Fade in and Fade Out
-- Slide in and Slide Out animations
-- Rendering animations
-- Button clicks and UI elements
-
-Animate for all components, including on landing page and app pages.
-
-## Three JS Graphics
-
-Your app comes with three js by default. You can use it to create 3D graphics for landing pages, games, etc.
-
-
-## Colors
-
-You can override colors in: `src/index.css`
-
-This uses the oklch color format for tailwind v4.
-
-Always use these color variable names.
-
-Make sure all ui components are set up to be mobile responsive and compatible with both light and dark mode.
-
-Set theme using `dark` or `light` variables at the parent className.
-
-## Styling and Theming
-
-When changing the theme, always change the underlying theme of the shad cn components app-wide under `src/components/ui` and the colors in the index.css file.
-
-Avoid hardcoding in colors unless necessary for a use case, and properly implement themes through the underlying shad cn ui components.
-
-When styling, ensure buttons and clickable items have pointer-click on them (don't by default).
-
-Always follow a set theme style and ensure it is tuned to the user's liking.
-
-## Toasts
-
-You should always use toasts to display results to the user, such as confirmations, results, errors, etc.
-
-Use the shad cn Sonner component as the toaster. For example:
-
-```
-import { toast } from "sonner"
-
-import { Button } from "@/components/ui/button"
-export function SonnerDemo() {
-  return (
-    <Button
-      variant="outline"
-      onClick={() =>
-        toast("Event has been created", {
-          description: "Sunday, December 03, 2023 at 9:00 AM",
-          action: {
-            label: "Undo",
-            onClick: () => console.log("Undo"),
-          },
-        })
-      }
-    >
-      Show Toast
-    </Button>
-  )
-}
-```
-
-Remember to import { toast } from "sonner". Usage: `toast("Event has been created.")`
-
-## Dialogs
-
-Always ensure your larger dialogs have a scroll in its content to ensure that its content fits the screen size. Make sure that the content is not cut off from the screen.
-
-Ideally, instead of using a new page, use a Dialog instead. 
-
-# Using the Convex backend
-
-You will be implementing the convex backend. Follow your knowledge of convex and the documentation to implement the backend.
-
-## The Convex Schema
-
-You must correctly follow the convex schema implementation.
-
-The schema is defined in `src/convex/schema.ts`.
-
-Do not include the `_id` and `_creationTime` fields in your queries (it is included by default for each table).
-Do not index `_creationTime` as it is indexed for you. Never have duplicate indexes.
-
-
-## Convex Actions: Using CRUD operations
-
-When running anything that involves external connections, you must use a convex action with "use node" at the top of the file.
-
-You cannot have queries or mutations in the same file as a "use node" action file. Thus, you must use pre-built queries and mutations in other files.
-
-You can also use the pre-installed internal crud functions for the database:
-
-```ts
-// in convex/users.ts
-import { crud } from "convex-helpers/server/crud";
-import schema from "./schema.ts";
-
-export const { create, read, update, destroy } = crud(schema, "users");
-
-// in some file, in an action:
-const user = await ctx.runQuery(internal.users.read, { id: userId });
-
-await ctx.runMutation(internal.users.update, {
-  id: userId,
-  patch: {
-    status: "inactive",
-  },
-});
-```
-
-
-## Common Convex Mistakes To Avoid
-
-When using convex, make sure:
-- Document IDs are referenced as `_id` field, not `id`.
-- Document ID types are referenced as `Id<"TableName">`, not `string`.
-- Document object types are referenced as `Doc<"TableName">`.
-- Keep schemaValidation to false in the schema file.
-- You must correctly type your code so that it passes the type checker.
-- You must handle null / undefined cases of your convex queries for both frontend and backend, or else it will throw an error that your data could be null or undefined.
-- Always use the `@/folder` path, with `@/convex/folder/file.ts` syntax for importing convex files.
-- This includes importing generated files like `@/convex/_generated/server`, `@/convex/_generated/api`
-- Remember to import functions like useQuery, useMutation, useAction, etc. from `convex/react`
-- NEVER have return type validators.
+**UI** — mobile responsive, always. No nested cards, no shadows — hairline borders instead. Spinners rather than skeleton loaders. Toasts via sonner for results and errors. Keep the theme in `src/index.css` tokens rather than hard-coding colors, and prefer the existing shadcn primitives in `src/components/ui`.
