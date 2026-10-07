@@ -403,11 +403,8 @@ export default function Landing() {
       </main>
 
       <footer className="border-t border-border">
-        <div className="mx-auto flex w-full max-w-5xl flex-col gap-3 px-6 py-8 sm:flex-row sm:items-center sm:justify-between">
+        <div className="mx-auto flex w-full max-w-5xl items-center px-6 py-8">
           <Wordmark />
-          <p className="text-[11px] tracking-[0.12em] text-muted-foreground uppercase">
-            Version 1 · Explore and saved projects
-          </p>
         </div>
       </footer>
     </div>
