@@ -45,7 +45,7 @@ const STEPS = [
   {
     number: "01",
     title: "Scroll the feed",
-    body: "A discovery feed drawn from all over GitHub and refreshed as you go. Following topics is optional — they only steer it.",
+    body: "An endless feed of projects from all over GitHub, one card at a time. The next one is already loading.",
   },
   {
     number: "02",
@@ -55,22 +55,23 @@ const STEPS = [
   {
     number: "03",
     title: "Save the keepers",
-    body: "Bookmark the projects worth coming back to and dismiss the rest. Your ratings shape what turns up next.",
+    body: "Bookmark the projects worth coming back to, skip the rest, and the feed picks up on both.",
   },
 ];
 
+/** The three beats of the loop, not three pages — there are two of those. */
 const INSIDE = [
   {
     title: "Your feed",
-    body: "One card at a time: screenshots, the README, and a rating. Scroll past anything and it never returns.",
+    body: "One card at a time: screenshots, the README and a rating. Scroll past anything and it will not come back.",
   },
   {
-    title: "Endless discovery",
-    body: "Everything the feed has turned up so far, searchable by name, language or topic.",
+    title: "Saved projects",
+    body: "Everything you bookmarked, in one list you can re-rate or open on GitHub whenever you like.",
   },
   {
-    title: "Your dashboard",
-    body: "Your totals, the topics nudging the feed, and the projects you saved, rated or hid.",
+    title: "It keeps up with you",
+    body: "Rate, save or skip and the feed shifts: more of what you liked, less of what you did not, plus a slice reserved for corners of GitHub you have not met.",
   },
 ];
 
@@ -238,15 +239,14 @@ export default function Landing() {
             transition={{ duration: 0.5, ease: "easeOut" }}
             className="max-w-2xl"
           >
-            <MicroLabel>A personal GitHub feed</MicroLabel>
+            <MicroLabel>An endless feed of GitHub projects</MicroLabel>
             <h1 className="mt-6 text-4xl font-semibold tracking-[-0.03em] text-balance sm:text-5xl lg:text-6xl">
-              A GitHub feed you tune by hand.
+              Social media, but for GitHub.
             </h1>
             <p className="mt-6 max-w-xl text-base leading-relaxed text-muted-foreground">
-              Rate projects from across GitHub and the feed answers back: save
-              the ones worth keeping, dismiss the noise, and keep scrolling.
-              There is no timeline to keep up with and no algorithm you cannot
-              read.
+              Scroll projects instead of posts. Rate what you like, save what
+              you will come back to, skip the rest. No timeline, nothing to
+              post, nothing to keep up with.
             </p>
             <div className="mt-8">
               <Button size="lg" asChild>
@@ -313,7 +313,7 @@ export default function Landing() {
           <div className="mx-auto w-full max-w-5xl px-6 py-20 sm:py-24">
             <MicroLabel>What is inside</MicroLabel>
             <h2 className="mt-5 max-w-xl text-2xl font-semibold tracking-[-0.02em] text-balance sm:text-3xl">
-              Three pages, one loop.
+              Two pages, one loop.
             </h2>
 
             <div className="mt-12 grid gap-px overflow-hidden rounded-xl border border-border bg-border sm:grid-cols-3">
@@ -390,8 +390,7 @@ export default function Landing() {
               Your next favourite project is one rating away.
             </h2>
             <p className="mx-auto mt-4 max-w-md text-sm leading-relaxed text-muted-foreground">
-              Rate ten projects and your feed starts to look like something you
-              would have chosen yourself.
+              Rate ten projects and your feed starts to look like yours.
             </p>
             <div className="mt-8 flex justify-center">
               <Button size="lg" asChild>
