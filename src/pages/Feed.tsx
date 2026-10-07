@@ -39,8 +39,13 @@ function atScrollBottom() {
   );
 }
 
-/** How many upcoming cards get their data warmed ahead of time. */
-const PREFETCH_AHEAD = 3;
+/** How many upcoming cards keep their README subscription and image warm. */
+const PREFETCH_AHEAD = 6;
+/** Background enrichment batches, matching the action's per-call cap. */
+const WARM_BATCH = 6;
+/** Give a failed warm batch a couple of retries before giving up on it. */
+const WARM_RETRIES = 2;
+const WARM_RETRY_DELAY_MS = 4_000;
 
 const FETCH_COOLDOWN_MS = 8_000;
 const DISCOVERY_LIMIT = 24;
@@ -48,19 +53,12 @@ const KEEP_PREVIOUS = 4;
 const PRUNE_AFTER = 8;
 
 /**
- * Warms the README and hero image of a card the viewer hasn't reached yet, so
- * arriving at it shows the finished card instead of one reorganizing itself.
+ * Keeps the README subscription and hero image of the next few cards warm, so
+ * arriving at one shows the finished card instead of one reorganizing itself.
+ * The fetching itself runs in the background warm queue above.
  */
 function PrefetchRepo({ repoId }: { repoId: number }) {
   const readme = useQuery(api.feed.readme, { repoId });
-  const enrich = useAction(api.github.enrich);
-  const requested = useRef(false);
-
-  useEffect(() => {
-    if (!readme || readme.readmeLoaded || requested.current) return;
-    requested.current = true;
-    void enrich({ repoIds: [repoId] }).catch(() => {});
-  }, [enrich, readme, repoId]);
 
   const image = readme?.images?.[0];
   useEffect(() => {
@@ -90,6 +88,9 @@ export default function Feed() {
   const queued = useRef(new Set<number>());
   const touchStart = useRef<number | null>(null);
   const lastWheel = useRef(0);
+  const warmQueue = useRef<number[]>([]);
+  const warmInFlight = useRef(false);
+  const warmAttempts = useRef(new Map<number, number>());
 
   const shouldDiscover = ids.length === 0 || activeIndex >= ids.length - 5;
   const discovery = useQuery(
@@ -114,6 +115,38 @@ export default function Feed() {
   const setSaved = useMutation(api.feed.setSaved);
   const setHidden = useMutation(api.feed.setHidden);
   const fetchMore = useAction(api.github.fetchMore);
+  const enrich = useAction(api.github.enrich);
+
+  /**
+   * Drains the warm queue: background README enrichment for whole discovery
+   * batches, running the moment projects enter the feed — never waiting for
+   * the viewer to scroll near them. Failed batches are retried a few times.
+   */
+  const drainWarmQueue = useCallback(() => {
+    if (warmInFlight.current) return;
+    warmInFlight.current = true;
+    void (async () => {
+      try {
+        while (warmQueue.current.length > 0) {
+          const batch = warmQueue.current.splice(0, WARM_BATCH);
+          try {
+            await enrich({ repoIds: batch });
+          } catch {
+            for (const id of batch) {
+              const attempts = (warmAttempts.current.get(id) ?? 0) + 1;
+              if (attempts <= WARM_RETRIES) {
+                warmAttempts.current.set(id, attempts);
+                warmQueue.current.push(id);
+              }
+            }
+            await new Promise((resolve) => setTimeout(resolve, WARM_RETRY_DELAY_MS));
+          }
+        }
+      } finally {
+        warmInFlight.current = false;
+      }
+    })();
+  }, [enrich]);
 
   useEffect(() => {
     if (!shouldDiscover || !discovery) return;
@@ -122,11 +155,15 @@ export default function Feed() {
     );
     if (!additions.length) return;
     additions.forEach((id) => queued.current.add(id));
+    // Warm the whole batch in the background right now, so cards are ready
+    // long before the viewer reaches them.
+    warmQueue.current.push(...additions);
+    drainWarmQueue();
     const timer = window.setTimeout(() => {
       setIds((current) => [...current, ...additions.filter((id) => !current.includes(id))]);
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [discovery, excluded, shouldDiscover]);
+  }, [discovery, drainWarmQueue, excluded, shouldDiscover]);
 
   const loadMore = useCallback(async (force = false) => {
     if (fetching.current) return;
