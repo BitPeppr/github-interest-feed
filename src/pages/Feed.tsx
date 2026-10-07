@@ -26,6 +26,7 @@ export default function Feed() {
   const [savedOverrides, setSavedOverrides] = useState<Map<number, boolean>>(() => new Map());
   const [isFetching, setIsFetching] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
+  const [direction, setDirection] = useState(1);
 
   const fetching = useRef(false);
   const lastFetch = useRef(0);
@@ -88,6 +89,7 @@ export default function Feed() {
 
   const next = useCallback(() => {
     if (activeIndex >= ids.length - 1) return;
+    setDirection(1);
     const newIndex = activeIndex + 1;
     setActiveIndex(newIndex);
     if (newIndex >= PRUNE_AFTER) {
@@ -100,11 +102,12 @@ export default function Feed() {
   }, [activeIndex, ids]);
 
   const previous = useCallback(() => {
+    if (activeIndex === 0 && previousIds.length === 0) return;
+    setDirection(-1);
     if (activeIndex > 0) {
       setActiveIndex((index) => Math.max(0, index - 1));
       return;
     }
-    if (previousIds.length === 0) return;
     const restore = previousIds.slice(-KEEP_PREVIOUS);
     setPreviousIds((current) => current.slice(0, -restore.length));
     setIds((current) => [...restore, ...current]);
@@ -126,6 +129,8 @@ export default function Feed() {
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
+      // The README dialog owns the keyboard while it is open.
+      if (document.querySelector('[role="dialog"][data-state="open"]')) return;
       if (event.key === "ArrowDown" || event.key === "PageDown") {
         event.preventDefault();
         next();
@@ -178,7 +183,11 @@ export default function Feed() {
   ) : null;
 
   return (
-    <div className="min-h-screen bg-background text-foreground">
+    <div className="relative min-h-screen text-foreground">
+      <div aria-hidden className="pointer-events-none fixed inset-0 -z-10">
+        <div className="absolute inset-x-0 -top-48 h-[40rem] bg-[radial-gradient(40rem_28rem_at_50%_45%,var(--accent),transparent_72%)]" />
+        <div className="absolute inset-0 opacity-[0.035] [background-image:linear-gradient(to_right,var(--foreground)_1px,transparent_1px),linear-gradient(to_bottom,var(--foreground)_1px,transparent_1px)] [background-size:64px_64px]" />
+      </div>
       <AppHeader active="feed" />
       <main
         className="mx-auto flex min-h-[calc(100svh-56px)] w-full max-w-4xl flex-col px-4 py-5 sm:px-6"
@@ -202,13 +211,16 @@ export default function Feed() {
           else previous();
         }}
       >
-        <div className="mb-3 flex items-center justify-between gap-3">
+        <div className="mb-3 flex items-end justify-between gap-3">
           <div>
             <h1 className="text-xl font-semibold tracking-tight">Explore</h1>
-            <p className="text-xs text-muted-foreground">One project at a time</p>
+            <p className="mt-0.5 font-mono text-[11px] tracking-[0.22em] text-muted-foreground uppercase">
+              One project at a time
+            </p>
           </div>
           <p className="text-xs tabular-nums text-muted-foreground">
-            {baseIndex + activeIndex + 1} explored · {discovery?.rated ?? 0} rated
+            <span className="text-foreground">{baseIndex + activeIndex + 1}</span> explored ·{" "}
+            {discovery?.rated ?? 0} rated
           </p>
         </div>
         {error}
@@ -231,15 +243,16 @@ export default function Feed() {
               <AnimatePresence mode="wait" initial={false}>
                 <motion.div
                   key={repoId}
-                  initial={{ opacity: 0, y: 18 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -18 }}
-                  transition={{ duration: 0.2, ease: "easeOut" }}
+                  initial={{ opacity: 0, y: direction * 22, scale: 0.99 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={{ opacity: 0, y: direction * -22, scale: 0.99 }}
+                  transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
                   className="w-full"
                 >
                   <ReelCard
                     project={{ ...project, saved: savedOverrides.get(repoId) ?? project.saved }}
                     active
+                    index={baseIndex + activeIndex + 1}
                     onRate={rate}
                     onClear={clear}
                     onToggleSaved={toggleSaved}
@@ -255,10 +268,13 @@ export default function Feed() {
         </div>
 
         {repoId !== undefined && (
-          <div className="mx-auto mt-4 flex w-full max-w-3xl items-center justify-between border-t border-border pt-3">
-            <Button variant="ghost" size="sm" disabled={activeIndex === 0 && previousIds.length === 0} onClick={previous}>↑ Previous</Button>
-            <span className="text-xs text-muted-foreground">Scroll, swipe, or rate to continue</span>
-            <Button variant="ghost" size="sm" onClick={next}>Next ↓</Button>
+          <div className="mx-auto mt-3 flex w-full max-w-3xl items-center justify-between gap-3 border-t border-border/70 pt-3">
+            <span className="font-mono text-[10px] tracking-[0.22em] text-muted-foreground uppercase">
+              Scroll · swipe · rate to advance
+            </span>
+            <span className="hidden font-mono text-[10px] tracking-[0.22em] text-muted-foreground uppercase sm:inline">
+              ↑ ↓ to move
+            </span>
           </div>
         )}
         {isFetching && repoId !== undefined && (

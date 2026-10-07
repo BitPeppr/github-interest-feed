@@ -4,8 +4,13 @@ import { parseMarkdown, type Block } from "@/lib/markdown-parse";
 import { cn } from "@/lib/utils";
 
 const SAFE_URL = /^https?:\/\//i;
+/**
+ * Inline tokens. Note the missing `g` flag: `renderInline` recurses, and a
+ * shared global regex lets a nested call reset `lastIndex` mid-scan, which made
+ * the outer loop re-read the same token forever. Each call builds its own.
+ */
 const INLINE_PATTERN =
-  /(!\[[^\]]*\]\([^)\s]+\))|(\[[^\]]+\]\((?:<[^>]+>|[^)\s]+)\))|(`[^`\n]+`)|(\*\*[^*\n]+\*\*)|(__[^_\n]+__)|(~~[^~\n]+~~)|(\*[^*\n]+\*)|(_[^_\n]+_)/g;
+  /(!\[[^\]]*\]\([^)\s]+\))|(\[[^\]]+\]\((?:<[^>]+>|[^)\s]+)\))|(`[^`\n]+`)|(\*\*[^*\n]+\*\*)|(__[^_\n]+__)|(~~[^~\n]+~~)|(\*[^*\n]+\*)|(_[^_\n]+_)/;
 
 function MarkdownImage({ src, alt }: { src: string; alt: string }) {
   const [broken, setBroken] = useState(false);
@@ -28,8 +33,8 @@ function renderInline(text: string, prefix: string): React.ReactNode[] {
   let key = 0;
   let match: RegExpExecArray | null;
 
-  INLINE_PATTERN.lastIndex = 0;
-  while ((match = INLINE_PATTERN.exec(text)) !== null) {
+  const pattern = new RegExp(INLINE_PATTERN.source, "g");
+  while ((match = pattern.exec(text)) !== null) {
     if (match.index > lastIndex) {
       nodes.push(text.slice(lastIndex, match.index));
     }
@@ -188,15 +193,21 @@ export function Markdown({
   title,
   className,
   maxBlocks,
+  hideImages,
 }: {
   source: string;
   title?: string;
   className?: string;
   /** Show only the opening of the README (keeps long feeds light). */
   maxBlocks?: number;
+  /** Drop images entirely — used when a screenshot is shown elsewhere. */
+  hideImages?: boolean;
 }) {
   const blocks = useMemo(() => {
-    const parsed = parseMarkdown(source, title);
+    const parsed = parseMarkdown(
+      hideImages ? source.replace(/!\[[^\]]*\]\([^)\s]*\)?/g, "") : source,
+      title,
+    );
     if (!maxBlocks || parsed.length <= maxBlocks) return parsed;
 
     const head = parsed.slice(0, maxBlocks);
@@ -208,7 +219,7 @@ export function Markdown({
       };
     }
     return head;
-  }, [source, title, maxBlocks]);
+  }, [source, title, maxBlocks, hideImages]);
 
   return (
     <div
