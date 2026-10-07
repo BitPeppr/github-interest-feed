@@ -48,6 +48,10 @@ export interface RatedRepo {
   value?: number;
   saved?: boolean;
   hidden?: boolean;
+  /** Bounded engagement counters from the `ratings` row. */
+  githubOpens?: number;
+  readmeOpens?: number;
+  dwellMs?: number;
 }
 
 /**
@@ -68,6 +72,8 @@ export interface RankingFeatures {
   languageAffinity: number;
   /** Capped count for the repository owner. */
   ownerAffinity: number;
+  /** Capped count of explicitly followed topics on the repo. */
+  explicitTopic: number;
   /** Strongest dislike attached to any of the repo topics (<= 0). */
   topicDislike: number;
   /** Dislike attached to the language (<= 0). */
@@ -133,6 +139,7 @@ export function zeroFeatures(): RankingFeatures {
     topicAffinity: 0,
     languageAffinity: 0,
     ownerAffinity: 0,
+    explicitTopic: 0,
     topicDislike: 0,
     languageDislike: 0,
     ownerDislike: 0,

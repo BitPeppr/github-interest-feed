@@ -32,6 +32,8 @@ export interface AssembleOptions {
   exploreSlots?: number;
   windowSize?: number;
   limit?: number;
+  /** Topics the user explicitly follows — measured as their own feature. */
+  followedTopics?: Set<string>;
 }
 
 export interface AssembledFeed {
@@ -44,6 +46,7 @@ export interface AssembledFeed {
 export function tagSources(
   repo: RepoSnapshot,
   signals: Signals,
+  followedTopics?: Set<string>,
 ): CandidateSource[] {
   const sources: CandidateSource[] = ["ranked"];
   if (
@@ -67,6 +70,13 @@ export function tagSources(
     affinity = true;
   }
   if (!affinity && (signals.ownerAffinity.get(repo.owner) ?? 0) > 0) {
+    affinity = true;
+  }
+  if (
+    !affinity &&
+    followedTopics !== undefined &&
+    repo.topics.some((topic) => followedTopics.has(topic))
+  ) {
     affinity = true;
   }
   if (affinity) sources.push("topic");
@@ -106,6 +116,9 @@ export function assembleFeed(
   options: AssembleOptions = {},
 ): AssembledFeed {
   const weights: RankingWeights = options.weights ?? DEFAULT_WEIGHTS;
+  const followedTopics = options.followedTopics;
+  const semanticExtras =
+    followedTopics === undefined ? undefined : { followedTopics };
   const poolSize = options.poolSize ?? CANDIDATE_POOL;
   // `windowSize` is the explicit knob and `limit` the caller-facing alias.
   // Previously only `limit` was read, so passing `windowSize` silently fell
@@ -121,13 +134,18 @@ export function assembleFeed(
   );
 
   const scored: ScoredCandidate[] = unseen.map((repo) => {
-    const { score, features, parts } = scoreProject(repo, signals, weights);
+    const { score, features, parts } = scoreProject(
+      repo,
+      signals,
+      weights,
+      semanticExtras,
+    );
     return {
       repo,
       score,
       explore: 0,
       facets: facetsOf(repo),
-      sources: tagSources(repo, signals),
+      sources: tagSources(repo, signals, followedTopics),
       features,
       parts,
     };
@@ -180,7 +198,8 @@ export function assembleFeed(
       explore: pick.explore,
       facets: pick.facets,
       sources: [] as CandidateSource[],
-      features: scoreProject(pick.repo, signals, weights).features,
+      features: scoreProject(pick.repo, signals, weights, semanticExtras)
+        .features,
       parts: [],
     };
     const sources = [...base.sources];

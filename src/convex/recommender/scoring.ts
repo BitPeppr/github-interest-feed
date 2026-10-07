@@ -9,6 +9,7 @@ import {
   ACCELERATION_LOG_CAP,
   AFFINITY_COUNT_CAP,
   DEFAULT_WEIGHTS,
+  EXPLICIT_TOPIC_CAP,
   FRESH_HALF_LIFE_DAYS,
   LANGUAGE_EXPLORE_SHARE,
   LONG_TAIL_STAR_THRESHOLD,
@@ -94,7 +95,9 @@ export function unexploredness(repo: RepoSnapshot, signals: Signals): number {
 
 /**
  * Measure every ranking feature for a repository. Semantic features default
- * to 0 and are filled by the semantic pipeline (PR3).
+ * to 0 and are filled by the semantic pipeline (PR3). `followedTopics` are
+ * the user's explicitly followed GitHub topics — high-quality stated
+ * preferences, measured separately from learned affinity.
  */
 export function extractFeatures(
   repo: RepoSnapshot,
@@ -103,6 +106,7 @@ export function extractFeatures(
     best?: number;
     weighted?: number;
     negative?: number;
+    followedTopics?: Set<string>;
   },
 ): RankingFeatures {
   if (repo.archived) {
@@ -113,6 +117,7 @@ export function extractFeatures(
       topicAffinity: 0,
       languageAffinity: 0,
       ownerAffinity: 0,
+      explicitTopic: 0,
       topicDislike: Number.NEGATIVE_INFINITY,
       languageDislike: 0,
       ownerDislike: 0,
@@ -160,6 +165,14 @@ export function extractFeatures(
 
   const ownerSeen = signals.ownerSeen.get(repo.owner) ?? 0;
 
+  let explicitTopic = 0;
+  if (semantic?.followedTopics) {
+    for (const topic of repo.topics) {
+      if (semantic.followedTopics.has(topic)) explicitTopic += 1;
+    }
+    explicitTopic = Math.min(explicitTopic, EXPLICIT_TOPIC_CAP);
+  }
+
   const exploration =
     (repo.topics.length > 0
       ? (topicExplore / repo.topics.length) * TOPIC_EXPLORE_SHARE
@@ -174,6 +187,7 @@ export function extractFeatures(
     topicAffinity: affinityWeight(topicAffinityMax),
     languageAffinity: affinityWeight(languageAffinity),
     ownerAffinity: affinityWeight(signals.ownerAffinity.get(repo.owner) ?? 0),
+    explicitTopic,
     topicDislike: topicDislikeMax,
     languageDislike,
     ownerDislike: signals.ownerDislike.get(repo.owner) ?? 0,
@@ -208,7 +222,12 @@ export function scoreProject(
   repo: RepoSnapshot,
   signals: Signals,
   weights: RankingWeights = DEFAULT_WEIGHTS,
-  semantic?: { best?: number; weighted?: number; negative?: number },
+  semantic?: {
+    best?: number;
+    weighted?: number;
+    negative?: number;
+    followedTopics?: Set<string>;
+  },
 ): { score: number; features: RankingFeatures; parts: ScorePart[] } {
   if (repo.archived) {
     const features = extractFeatures(repo, signals, semantic);

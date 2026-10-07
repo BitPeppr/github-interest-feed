@@ -68,7 +68,10 @@ export function normalizeReadme(source: string): string {
   text = text.replace(
     /<a\b[^>]*href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi,
     (_match, href: string, inner: string) =>
-      `[${inner.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim()}](${href})`,
+      `[${inner
+        .replace(/<[^>]*>/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()}](${href})`,
   );
   text = text.replace(/<br\s*\/?>/gi, "\n");
   text = text.replace(/<hr\s*\/?>/gi, "\n\n---\n\n");

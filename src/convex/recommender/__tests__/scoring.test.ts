@@ -126,6 +126,22 @@ describe("scoreProject", () => {
     const b = scoreProject(repo({ repoId: 999983, stars: 1234 }), signals);
     expect(a.score).toBe(b.score);
   });
+
+  it("boosts repositories matching explicitly followed topics", () => {
+    const signals = emptySignals(NOW);
+    const target = repo({ repoId: 1, topics: ["rust", "cli"] });
+    const plain = scoreProject(target, signals);
+    const boosted = scoreProject(target, signals, undefined, {
+      followedTopics: new Set(["rust"]),
+    });
+    expect(boosted.features.explicitTopic).toBe(1);
+    expect(boosted.score).toBeGreaterThan(plain.score);
+    const unrelated = scoreProject(target, signals, undefined, {
+      followedTopics: new Set(["haskell"]),
+    });
+    expect(unrelated.features.explicitTopic).toBe(0);
+    expect(unrelated.score).toBe(plain.score);
+  });
 });
 
 describe("star growth", () => {

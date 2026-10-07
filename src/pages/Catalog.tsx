@@ -73,7 +73,8 @@ export default function Catalog() {
   }, [data, search, topic, language, sort]);
 
   const visible = results.slice(0, VISIBLE_LIMIT);
-  const isEmptyCatalog = data !== undefined && data !== null && data.total === 0;
+  const isEmptyCatalog =
+    data !== undefined && data !== null && data.total === 0;
 
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -86,9 +87,7 @@ export default function Catalog() {
         className="mx-auto w-full max-w-6xl px-6 py-10 lg:py-12"
       >
         <div className="max-w-2xl">
-          <h1 className="text-2xl font-semibold tracking-[-0.02em]">
-            Catalog
-          </h1>
+          <h1 className="text-2xl font-semibold tracking-[-0.02em]">Catalog</h1>
           <p className="mt-1.5 text-sm leading-relaxed text-muted-foreground">
             Everything your feed has turned up so far, minus the projects you
             hid. Search it, filter it, and rate what you find — ratings show up
@@ -217,12 +216,18 @@ export default function Catalog() {
 
             {results.length === 0 ? (
               <div className="mt-4 rounded-lg border border-dashed border-border px-6 py-12 text-center">
-                <p className="text-sm font-medium">Nothing matches those filters</p>
+                <p className="text-sm font-medium">
+                  Nothing matches those filters
+                </p>
                 <p className="mx-auto mt-2 max-w-sm text-sm leading-relaxed text-muted-foreground">
                   Try a shorter search term, or widen the topic and language
                   filters.
                 </p>
-                <Button variant="outline" className="mt-5" onClick={clearFilters}>
+                <Button
+                  variant="outline"
+                  className="mt-5"
+                  onClick={clearFilters}
+                >
                   Clear filters
                 </Button>
               </div>

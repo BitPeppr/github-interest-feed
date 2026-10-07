@@ -167,7 +167,10 @@ export const shared = query({
       : new Map<number, Doc<"ratings">>();
     // One scan feeds every item — no per-item lookups.
     const repos = new Map(
-      (await ctx.db.query("repos").collect()).map((repo) => [repo.repoId, repo]),
+      (await ctx.db.query("repos").collect()).map((repo) => [
+        repo.repoId,
+        repo,
+      ]),
     );
     const items = collection.repoIds
       .map((repoId) => {
@@ -213,7 +216,11 @@ export const setProfile = mutation({
       .withIndex("by_user", (q) => q.eq("userId", userId))
       .unique();
     if (existing) {
-      await ctx.db.patch(existing._id, { isPublic, bio: clean, updatedAt: now });
+      await ctx.db.patch(existing._id, {
+        isPublic,
+        bio: clean,
+        updatedAt: now,
+      });
     } else {
       await ctx.db.insert("profiles", {
         userId,
@@ -250,7 +257,10 @@ export const publicProfile = query({
       .withIndex("by_user", (q) => q.eq("userId", normalized))
       .collect();
     const repos = new Map(
-      (await ctx.db.query("repos").collect()).map((repo) => [repo.repoId, repo]),
+      (await ctx.db.query("repos").collect()).map((repo) => [
+        repo.repoId,
+        repo,
+      ]),
     );
 
     // The shelf: the projects they rated 4-5, best and earliest first.
@@ -302,7 +312,10 @@ export const wrapped = query({
       .withIndex("by_user", (q) => q.eq("userId", userId))
       .collect();
     const repos = new Map(
-      (await ctx.db.query("repos").collect()).map((repo) => [repo.repoId, repo]),
+      (await ctx.db.query("repos").collect()).map((repo) => [
+        repo.repoId,
+        repo,
+      ]),
     );
 
     // Imported stars are taste, not deliberate ratings: they get their own

@@ -19,6 +19,8 @@ export interface RankingWeights {
   topicAffinity: number;
   languageAffinity: number;
   ownerAffinity: number;
+  /** Match against topics the user explicitly follows. */
+  explicitTopic: number;
   topicDislike: number;
   languageDislike: number;
   ownerDislike: number;
@@ -54,6 +56,7 @@ export const DEFAULT_WEIGHTS: RankingWeights = {
   topicAffinity: 0.4,
   languageAffinity: 0.6,
   ownerAffinity: 0.6,
+  explicitTopic: 0.8,
   topicDislike: 1,
   languageDislike: 1,
   ownerDislike: 1,
@@ -113,6 +116,21 @@ export const POSITIVE_RATING_THRESHOLD = 4;
 /** Ratings <= this value build negative affinity. */
 export const NEGATIVE_RATING_THRESHOLD = 2;
 
+/**
+ * Behavioural evidence weights. A saved 5/5 project contributes its rating (+1
+ * per facet) plus the save bonus; a passive save without a rating contributes
+ * less than an explicit 4-5. Opens add small capped increments. Dwell is
+ * recorded for evaluation but deliberately excluded from affinity for now —
+ * time-on-card is too weak to move taste without more validation.
+ */
+export const SAVE_AFFINITY_BONUS = 2;
+export const SAVE_ONLY_AFFINITY = 0.75;
+export const GITHUB_OPEN_AFFINITY = 0.5;
+export const README_OPEN_AFFINITY = 0.25;
+export const COUNTED_OPENS_CAP = 2;
+/** Explicit-topic feature: capped count of followed topics on the repo. */
+export const EXPLICIT_TOPIC_CAP = 2;
+
 /** Scored candidates the selector chooses from, after the catalog scan. */
 export const CANDIDATE_POOL = 400;
 /** Slots in every window reserved for exploration instead of score. */
@@ -151,6 +169,7 @@ export const FEATURE_KEYS: (keyof RankingFeatures)[] = [
   "topicAffinity",
   "languageAffinity",
   "ownerAffinity",
+  "explicitTopic",
   "topicDislike",
   "languageDislike",
   "ownerDislike",

@@ -80,4 +80,36 @@ describe("buildSignals", () => {
     expect(signals.totalImpressions).toBe(1);
     expect(signals.topicSeen.get("zig")).toBe(1);
   });
+
+  it("weighs a saved 5/5 above a bare 5/5 above a passive save", () => {
+    const ratedSaved = buildSignals(NOW, [
+      {
+        repo: repo({ repoId: 1, topics: ["zig"] }),
+        value: 5,
+        saved: true,
+      },
+    ]);
+    const ratedOnly = buildSignals(NOW, [rated(1, 5, { topics: ["zig"] })]);
+    const savedOnly = buildSignals(NOW, [
+      { repo: repo({ repoId: 1, topics: ["zig"] }), saved: true },
+    ]);
+    const zig = (s: ReturnType<typeof buildSignals>) =>
+      s.topicAffinity.get("zig") ?? 0;
+    expect(zig(ratedSaved)).toBeGreaterThan(zig(ratedOnly));
+    expect(zig(ratedOnly)).toBeGreaterThan(zig(savedOnly));
+    expect(zig(savedOnly)).toBeGreaterThan(0);
+  });
+
+  it("credits bounded opens but ignores dwell for affinity", () => {
+    const signals = buildSignals(NOW, [
+      {
+        repo: repo({ repoId: 1, topics: ["zig"] }),
+        githubOpens: 10,
+        readmeOpens: 10,
+        dwellMs: 3_600_000,
+      },
+    ]);
+    // 2 counted GitHub opens * 0.5 + 2 counted README opens * 0.25 = 1.5.
+    expect(signals.topicAffinity.get("zig")).toBeCloseTo(1.5);
+  });
 });
