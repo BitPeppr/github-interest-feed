@@ -13,6 +13,10 @@ const Landing = lazy(() => import("./pages/Landing.tsx"));
 const AuthPage = lazy(() => import("./pages/Auth.tsx"));
 const Feed = lazy(() => import("./pages/Feed.tsx"));
 const Dashboard = lazy(() => import("./pages/Dashboard.tsx"));
+const Collections = lazy(() => import("./pages/Collections.tsx"));
+const SharedCollection = lazy(() => import("./pages/SharedCollection.tsx"));
+const Profile = lazy(() => import("./pages/Profile.tsx"));
+const Wrapped = lazy(() => import("./pages/Wrapped.tsx"));
 const NotFound = lazy(() => import("./pages/NotFound.tsx"));
 
 // Simple loading fallback for route transitions
@@ -161,6 +165,30 @@ createRoot(document.getElementById("root")!).render(
                   </RequireAuth>
                 }
               />
+              <Route
+                path="/collections"
+                element={
+                  <RequireAuth
+                    title="Sign in to see your collections"
+                    description="Curated shelves of projects, shareable by link."
+                  >
+                    <Collections />
+                  </RequireAuth>
+                }
+              />
+              <Route
+                path="/wrapped"
+                element={
+                  <RequireAuth
+                    title="Sign in to see your year"
+                    description="Your ratings, your taste, in review."
+                  >
+                    <Wrapped />
+                  </RequireAuth>
+                }
+              />
+              <Route path="/c/:collectionId" element={<SharedCollection />} />
+              <Route path="/u/:userId" element={<Profile />} />
               <Route path="*" element={<NotFound />} />
               </Routes>
             </Suspense>

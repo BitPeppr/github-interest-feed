@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useAction, useQuery } from "convex/react";
-import { ArrowDown, ArrowUp, ArrowUpRight, Bookmark, ExternalLink, EyeOff, GitFork, Star } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpRight, Bookmark, ExternalLink, EyeOff, GitFork, Star, TrendingUp } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -211,6 +211,12 @@ export function ReelCard({
               <GitFork className="size-4" aria-hidden />
               {formatCompact(project.forks)}
             </span>
+            {project.starGrowth7d != null && project.starGrowth7d >= 40 && (
+              <span className="inline-flex items-center gap-1.5 text-foreground">
+                <TrendingUp className="size-4" aria-hidden />
+                +{formatCompact(project.starGrowth7d)} this week
+              </span>
+            )}
             {project.license && <span>{project.license}</span>}
             {updated && <span>updated {updated}</span>}
             {project.archived && <span className="text-foreground">Archived</span>}

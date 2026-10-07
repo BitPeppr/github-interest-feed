@@ -5,6 +5,7 @@ import { Bookmark, ExternalLink, Star } from "lucide-react";
 import { toast } from "sonner";
 
 import { AppHeader } from "@/components/app-header";
+import { StarsImport } from "@/components/stars-import";
 import { Loading } from "@/components/feed/loading";
 import { InterestScale } from "@/components/feed/interest-scale";
 import { Button } from "@/components/ui/button";
@@ -29,6 +30,17 @@ export default function Dashboard() {
             <p className="mt-2 text-sm text-muted-foreground">{saved?.total ?? 0} projects you want to come back to.</p>
           </div>
           <Button asChild variant="outline"><Link to="/feed">Back to explore</Link></Button>
+        </div>
+
+        <div className="mt-6 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border px-4 py-3">
+          <div className="min-w-0">
+            <p className="text-sm font-medium">Taste profile</p>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              Import your GitHub stars — every starred project becomes an
+              implicit rating, so the feed knows you immediately.
+            </p>
+          </div>
+          <StarsImport />
         </div>
 
         {saved === undefined ? <Loading label="Loading saved projects…" /> : projects.length === 0 ? (

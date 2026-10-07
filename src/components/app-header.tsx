@@ -9,6 +9,8 @@ import { cn } from "@/lib/utils";
 const NAV = [
   { href: "/feed", label: "Explore", key: "feed" },
   { href: "/dashboard", label: "Saved", key: "dashboard" },
+  { href: "/collections", label: "Collections", key: "collections" },
+  { href: "/wrapped", label: "Wrapped", key: "wrapped" },
 ] as const;
 
 export type AppSection = (typeof NAV)[number]["key"];
@@ -55,9 +57,18 @@ export function AppHeader({ active }: { active: AppSection }) {
         </div>
 
         <div className="flex items-center gap-2">
-          <span className="hidden max-w-[200px] truncate text-xs text-muted-foreground lg:block">
-            {user?.email ?? "Guest session"}
-          </span>
+          {user ? (
+            <Link
+              to={`/u/${user._id}`}
+              className="hidden max-w-[200px] truncate text-xs text-muted-foreground hover:text-foreground lg:block"
+            >
+              {user.email ?? "Your shelf"}
+            </Link>
+          ) : (
+            <span className="hidden max-w-[200px] truncate text-xs text-muted-foreground lg:block">
+              Guest session
+            </span>
+          )}
           <Button
             variant="ghost"
             size="sm"

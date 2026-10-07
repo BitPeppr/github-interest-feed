@@ -5,6 +5,7 @@ import { RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 
 import { AppHeader } from "@/components/app-header";
+import { StarsImport } from "@/components/stars-import";
 import { ReelCard } from "@/components/feed/reel-card";
 import { Loading } from "@/components/feed/loading";
 import { Button } from "@/components/ui/button";
@@ -341,6 +342,18 @@ export default function Feed() {
         {[...(repoId === undefined ? [] : [repoId]), ...upcomingIds].map((id) => (
           <PrefetchRepo key={id} repoId={id} />
         ))}
+        {(discovery?.rated ?? 0) < 8 && (
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border px-4 py-3">
+            <div className="min-w-0">
+              <p className="text-sm font-medium">Bring your taste with you</p>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                Import your GitHub stars and the feed is personalized before you
+                rate anything.
+              </p>
+            </div>
+            <StarsImport />
+          </div>
+        )}
         {error}
 
         <div className="flex flex-1 flex-col justify-center">

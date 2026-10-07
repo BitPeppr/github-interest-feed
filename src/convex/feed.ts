@@ -262,7 +262,7 @@ const MAX_README_CHARS = 12_000;
  * ------------------------------------------------------------------ */
 
 /** The shape every project card is rendered from. */
-function toProject(repo: Doc<"repos">, interaction: Doc<"ratings"> | null) {
+export function toProject(repo: Doc<"repos">, interaction: Doc<"ratings"> | null) {
   return {
     repoId: repo.repoId,
     fullName: repo.fullName,
@@ -272,6 +272,7 @@ function toProject(repo: Doc<"repos">, interaction: Doc<"ratings"> | null) {
     url: repo.url,
     homepage: repo.homepage ?? null,
     stars: repo.stars,
+    starGrowth7d: repo.starGrowth7d ?? null,
     forks: repo.forks,
     openIssues: repo.openIssues,
     language: repo.language ?? null,
@@ -291,7 +292,7 @@ function toProject(repo: Doc<"repos">, interaction: Doc<"ratings"> | null) {
   };
 }
 
-async function interactionsForUser(
+export async function interactionsForUser(
   ctx: QueryCtx,
   userId: Id<"users">,
 ): Promise<Map<number, Doc<"ratings">>> {
@@ -302,7 +303,7 @@ async function interactionsForUser(
   return new Map(rows.map((row) => [row.repoId, row]));
 }
 
-async function findRepo(
+export async function findRepo(
   ctx: QueryCtx,
   repoId: number,
 ): Promise<Doc<"repos"> | null> {
@@ -367,8 +368,16 @@ function affinityWeight(count: number): number {
  * smaller one, so whole domains — keyboards, TUIs, simulations, art, music —
  * could never reach the window even once they were in the catalog.
  */
-const STARS_WEIGHT = 0.35;
-const STARS_CAP = 1.4;
+const STARS_WEIGHT = 0.22;
+const STARS_CAP = 0.9;
+/**
+ * Star velocity: growth and acceleration outrank raw size, so "before it was
+ * big" beats "already famous" — the whole point of a discovery feed.
+ */
+const VELOCITY_WEIGHT = 0.55;
+const VELOCITY_CAP = 1.7;
+const ACCEL_WEIGHT = 0.3;
+const ACCEL_CAP = 0.6;
 const JITTER_WEIGHT = 0.9;
 /** Freshness decays like a Reddit/HN score instead of a flat recent bonus. */
 const FRESH_HALF_LIFE_DAYS = 45;
@@ -483,6 +492,17 @@ function scoreProject(repo: Doc<"repos">, signals: Signals): number {
 
   let score = Math.min(Math.log10(repo.stars + 1) * STARS_WEIGHT, STARS_CAP);
   score += freshness(repo.pushedAt, signals.now) * FRESH_WEIGHT;
+
+  // Star velocity beats star count: a project gaining stars fast — or
+  // accelerating — is worth seeing before everyone else has.
+  const growth = repo.starGrowth7d ?? 0;
+  if (growth > 0) {
+    score += Math.min(VELOCITY_CAP, Math.log10(1 + growth) * VELOCITY_WEIGHT);
+  }
+  const accel = repo.starAccel ?? 0;
+  if (accel > 0) {
+    score += Math.min(ACCEL_CAP, Math.log10(1 + accel) * ACCEL_WEIGHT);
+  }
 
   // A project is as interesting as its best topic, not the sum of all twelve:
   // otherwise a repo tagged with everything outranks one tagged honestly.
@@ -756,7 +776,9 @@ export const discovery = query({
       repoIds: window.map((entry) => entry.repo.repoId),
       remaining: Math.max(0, candidates.length - window.length),
       catalogSize: repos.length,
-      rated: rows.filter((row) => typeof row.value === "number").length,
+      rated: rows.filter(
+        (row) => typeof row.value === "number" && row.implicit !== true,
+      ).length,
     };
   },
 });
@@ -863,7 +885,9 @@ export const stats = query({
       .collect();
     const repos = await ctx.db.query("repos").collect();
 
-    const rated = rows.filter((row) => typeof row.value === "number");
+    const rated = rows.filter(
+      (row) => typeof row.value === "number" && row.implicit !== true,
+    );
     const averageInterest =
       rated.length > 0
         ? rated.reduce((sum, row) => sum + (row.value ?? 0), 0) / rated.length
@@ -1052,6 +1076,133 @@ export const markSeen = mutation({
 /* ------------------------------------------------------------------ *
  * Internal functions used by the GitHub actions (actions have no db)  *
  * ------------------------------------------------------------------ */
+
+function dayString(timestamp: number): string {
+  return new Date(timestamp).toISOString().slice(0, 10);
+}
+
+/**
+ * Record today's star counts and diff them against about a week ago, so every
+ * repo carries its own growth and acceleration for ranking and "rising"
+ * labels. Growth without history is simply absent — no guesses.
+ */
+export const recordStarSnapshots = internalMutation({
+  args: {
+    entries: v.array(v.object({ repoId: v.number(), stars: v.number() })),
+  },
+  handler: async (ctx, { entries }) => {
+    const now = Date.now();
+    const today = dayString(now);
+    const weekAgo = dayString(now - 6 * 86_400_000);
+
+    for (const entry of entries.slice(0, 200)) {
+      const existing = await ctx.db
+        .query("starHistory")
+        .withIndex("by_repo_day", (q) =>
+          q.eq("repoId", entry.repoId).eq("day", today),
+        )
+        .unique();
+      if (existing) {
+        if (existing.stars !== entry.stars) {
+          await ctx.db.patch(existing._id, { stars: entry.stars });
+        }
+      } else {
+        await ctx.db.insert("starHistory", {
+          repoId: entry.repoId,
+          day: today,
+          stars: entry.stars,
+        });
+      }
+
+      const past = await ctx.db
+        .query("starHistory")
+        .withIndex("by_repo_day", (q) =>
+          q.eq("repoId", entry.repoId).lt("day", weekAgo),
+        )
+        .order("desc")
+        .first();
+      if (!past) continue;
+
+      const growth = entry.stars - past.stars;
+      const earlier = await ctx.db
+        .query("starHistory")
+        .withIndex("by_repo_day", (q) =>
+          q.eq("repoId", entry.repoId).lt("day", past.day),
+        )
+        .order("desc")
+        .first();
+      const previousGrowth = earlier ? past.stars - earlier.stars : 0;
+
+      const repo = await ctx.db
+        .query("repos")
+        .withIndex("by_repo_id", (q) => q.eq("repoId", entry.repoId))
+        .unique();
+      if (repo) {
+        await ctx.db.patch(repo._id, {
+          starGrowth7d: growth,
+          starAccel: growth - previousGrowth,
+        });
+      }
+    }
+    return entries.length;
+  },
+});
+
+/** Fastest movers and newest arrivals first — where growth is most likely. */
+export const reposToRefresh = internalQuery({
+  args: { limit: v.number() },
+  handler: async (ctx, { limit }) => {
+    const repos = await ctx.db.query("repos").collect();
+    const movers = [...repos]
+      .sort((a, b) => b.stars - a.stars)
+      .slice(0, Math.ceil(limit / 2));
+    const fresh = [...repos]
+      .sort((a, b) => b.firstSeenAt - a.firstSeenAt)
+      .slice(0, Math.floor(limit / 2));
+    const seen = new Set<number>();
+    const out: { repoId: number; fullName: string }[] = [];
+    for (const repo of [...movers, ...fresh]) {
+      if (seen.has(repo.repoId)) continue;
+      seen.add(repo.repoId);
+      out.push({ repoId: repo.repoId, fullName: repo.fullName });
+    }
+    return out;
+  },
+});
+
+/** Backfill a taste profile: starred projects become implicit 4/5 ratings. */
+export const applyStarImport = internalMutation({
+  args: { userId: v.id("users"), repoIds: v.array(v.number()) },
+  handler: async (ctx, { userId, repoIds }) => {
+    const now = Date.now();
+    let imported = 0;
+    let skipped = 0;
+    for (const repoId of [...new Set(repoIds)].slice(0, 500)) {
+      const existing = await ctx.db
+        .query("ratings")
+        .withIndex("by_user_repo", (q) =>
+          q.eq("userId", userId).eq("repoId", repoId),
+        )
+        .unique();
+      if (existing) {
+        // Explicit beats imported: never overwrite what the user did.
+        skipped += 1;
+        continue;
+      }
+      await ctx.db.insert("ratings", {
+        userId,
+        repoId,
+        value: 4,
+        implicit: true,
+        seenAt: now,
+        createdAt: now,
+        updatedAt: now,
+      });
+      imported += 1;
+    }
+    return { imported, skipped };
+  },
+});
 
 export const saveDiscoveredRepos = internalMutation({
   args: {

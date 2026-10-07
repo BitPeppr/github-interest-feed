@@ -2,7 +2,7 @@ import { getAuthUserId } from "@convex-dev/auth/server";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
-import { action, type ActionCtx } from "./_generated/server";
+import { action, internalAction, type ActionCtx } from "./_generated/server";
 import { normalizeTopic, type DiscoveredRepo } from "./feed";
 import { extractImages, readmeUrls } from "./lib/readme";
 
@@ -148,6 +148,11 @@ async function storeRepos(
     topicSlug,
     repos,
   });
+  // Star counts are recorded whenever we observe them, so growth over time
+  // can be diffed later.
+  await ctx.runMutation(internal.feed.recordStarSnapshots, {
+    entries: repos.map((repo) => ({ repoId: repo.repoId, stars: repo.stars })),
+  });
   return saved.added;
 }
 
@@ -259,6 +264,112 @@ export const enrich = action({
 
     await ctx.runMutation(internal.feed.saveEnrichment, { entries });
     return { enriched: entries.length };
+  },
+});
+
+/**
+ * Import a user's public GitHub stars as an instant taste profile: every
+ * starred project becomes an implicit 4/5 rating the feed learns from right
+ * away, instead of asking for ten manual ratings first.
+ */
+export const importStars = action({
+  args: { username: v.string() },
+  handler: async (ctx, { username }): Promise<{
+    imported: number;
+    total: number;
+    skipped: number;
+  }> => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) throw new Error("Sign in to import stars.");
+
+    const clean = username.trim().replace(/^@/, "");
+    if (!/^[A-Za-z0-9-]{1,39}$/.test(clean)) {
+      throw new Error("That does not look like a GitHub username.");
+    }
+
+    // Stars are public: no OAuth needed. Up to 500, a hundred per page.
+    const repos: DiscoveredRepo[] = [];
+    for (let page = 1; page <= 5; page += 1) {
+      const response = await fetch(
+        `https://api.github.com/users/${clean}/starred?per_page=100&page=${page}`,
+        { headers: githubHeaders() },
+      );
+      if (response.status === 404) {
+        throw new Error(`GitHub has no user called "${clean}".`);
+      }
+      if (response.status === 403 || response.status === 429) {
+        throw new Error(rateLimitMessage(response));
+      }
+      if (!response.ok) {
+        throw new Error(`GitHub responded with ${response.status}.`);
+      }
+      const items = (await response.json()) as GitHubSearchItem[];
+      if (!Array.isArray(items) || items.length === 0) break;
+      repos.push(...items.map(mapItem));
+      if (items.length < 100) break;
+    }
+
+    if (repos.length === 0) {
+      return { imported: 0, total: 0, skipped: 0 };
+    }
+
+    await ctx.runMutation(internal.feed.saveDiscoveredRepos, {
+      userId,
+      topicSlug: "github-stars",
+      repos,
+    });
+    await ctx.runMutation(internal.feed.recordStarSnapshots, {
+      entries: repos.map((repo) => ({ repoId: repo.repoId, stars: repo.stars })),
+    });
+    const result = await ctx.runMutation(internal.feed.applyStarImport, {
+      userId,
+      repoIds: repos.map((repo) => repo.repoId),
+    });
+    return {
+      imported: result.imported,
+      total: repos.length,
+      skipped: result.skipped,
+    };
+  },
+});
+
+/**
+ * Daily heartbeat for star velocity: refresh live star counts for the
+ * catalog's fastest movers and newest arrivals so growth can be diffed even
+ * when nobody is browsing.
+ */
+export const refreshStarSnapshots = internalAction({
+  args: {},
+  handler: async (ctx) => {
+    const targets: { repoId: number; fullName: string }[] = await ctx.runQuery(
+      internal.feed.reposToRefresh,
+      { limit: 40 },
+    );
+    const entries: { repoId: number; stars: number }[] = [];
+    for (const target of targets) {
+      try {
+        const response = await fetch(
+          `https://api.github.com/repos/${target.fullName}`,
+          { headers: githubHeaders() },
+        );
+        // Out of rate budget today: keep what we have, try again tomorrow.
+        if (response.status === 403 || response.status === 429) break;
+        if (!response.ok) continue;
+        const payload = (await response.json()) as { stargazers_count?: number };
+        if (typeof payload.stargazers_count === "number") {
+          entries.push({
+            repoId: target.repoId,
+            stars: payload.stargazers_count,
+          });
+        }
+      } catch {
+        // Best effort: tomorrow's run catches up.
+      }
+    }
+    if (entries.length > 0) {
+      await ctx.runMutation(internal.feed.recordStarSnapshots, { entries });
+    }
+    return { refreshed: entries.length };
   },
 });
 

@@ -20,11 +20,22 @@ There is no timeline to keep up with, nothing to post, and no algorithm you can'
 
 Everything you bookmarked in one list: re-rate it, open it on GitHub, or remove it. Ratings and saves are yours alone.
 
+### Bring your taste with you
+
+- **Import your GitHub stars.** Every starred project becomes an implicit rating, so the feed is personalized from the first scroll instead of asking for ten ratings first. Your own ratings always win over imports.
+- **Collections.** Group projects into shelves — "my keyboard builds", "2026 finds" — and flip them public to share by link.
+- **Your public shelf.** An opt-in profile page showing the projects you rated 4–5 and your public collections. Private until you say otherwise.
+- **Wrapped.** Your year in review: projects rated, your top language, the topics you loved, your earliest sighting, and your top pick.
+
+### Projects before they are big
+
+Star counts are snapshotted daily and diffed against last week, so the feed ranks by **growth velocity and acceleration**, not raw size — "2 weeks old, 800 stars, doubling daily" beats "already famous". Fast risers carry a `+N stars this week` badge on their card.
+
 ### A feed that learns
 
 The ranking is a small, legible system — roughly the shape of a modern social feed's recommender, adapted for repositories:
 
-- **Taste, not just topics.** The topics, languages and authors you rate highly pull more of the same toward the top.
+- **Taste, not just topics.** The topics, languages and authors you rate highly — including the implicit ratings from your star import — pull more of the same toward the top.
 - **Negative signals count double.** A skip says more than a like: skips and 1–2 ratings push their topics, languages and authors down — decisively.
 - **A slice reserved for discovery.** Every window keeps exploration slots for corners of GitHub you've never met, chosen from facets you've barely been shown. The slice cools down as the feed learns you.
 - **Freshness over fame.** Star counts are capped in the score and recency fades with a half-life, so a brand-new zero-star gem can stand next to a 20k-star classic.
@@ -37,10 +48,11 @@ Sign up or log in with an email code, or start rating immediately as a guest. Ei
 ## Try it
 
 1. Sign in with an email code (or continue as a guest).
-2. Scroll the feed — read the card, the README, whatever you need.
-3. Rate ten projects. That's all the feed needs to start looking like yours.
-4. Save the keepers; skip anything that isn't for you.
-5. Check **Saved** whenever you want to come back to something.
+2. Import your GitHub stars for an instantly personalized feed — or skip it and just start rating.
+3. Scroll the feed — read the card, the README, whatever you need.
+4. Rate ten projects. That's all the feed needs to start looking like yours.
+5. Save the keepers; skip anything that isn't for you.
+6. Check **Saved** whenever you want to come back to something, **Collections** to build shareable shelves, and **Wrapped** for your year in review.
 
 ---
 
@@ -54,7 +66,7 @@ All source lives under `src/`:
 
 | Path | What lives there |
 | --- | --- |
-| `src/pages` | Landing, Feed (Explore), Dashboard (Saved), Auth |
+| `src/pages` | Landing, Feed (Explore), Dashboard (Saved), Collections, Profile, Wrapped, Auth |
 | `src/components` | App chrome (`app-header`, `wordmark`), feed cards, shadcn primitives in `ui/` |
 | `src/convex` | Schema, feed ranking (`feed.ts`), GitHub ingestion (`github.ts`), auth |
 | `src/lib` | Safe Markdown renderer for READMEs, formatting helpers |
@@ -67,10 +79,11 @@ A shared Convex catalog stores repositories discovered through GitHub's search A
 
 ## The ranking pipeline
 
-1. **Signals.** Every rating, save and skip becomes per-topic / per-language / per-author affinity (positive) or dislike (weighted heavier, negative).
-2. **Scoring.** A single weighted sum per candidate — capped stars, freshness half-life, max-topic affinity, dislikes, an optimism term for under-exposed facets, a first-sighting boost, and a stable per-project jitter.
-3. **Reranking.** A greedy pass assembles each window: Jaccard similarity between projects is penalised, repeated authors decay, and languages get a milder repeat decay.
-4. **Interleaving.** Reserved exploration picks are spread evenly through the window instead of bunching at the end.
+1. **Signals.** Every rating (explicit or imported), save and skip becomes per-topic / per-language / per-author affinity (positive) or dislike (weighted heavier, negative).
+2. **Scoring.** A single weighted sum per candidate — star **velocity and acceleration** from the daily snapshot diffs (weighted above raw, capped stars), freshness half-life, max-topic affinity, dislikes, an optimism term for under-exposed facets, a first-sighting boost, and a stable per-project jitter.
+3. **Star snapshots.** Ingestion records each observed star count into a daily `starHistory` table, and a cron refreshes live counts for fast movers; growth is always diffed against real observations, never guessed.
+4. **Reranking.** A greedy pass assembles each window: Jaccard similarity between projects is penalised, repeated authors decay, and languages get a milder repeat decay.
+5. **Interleaving.** Reserved exploration picks are spread evenly through the window instead of bunching at the end.
 
 ## No flash, no reflow
 

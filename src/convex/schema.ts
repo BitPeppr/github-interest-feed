@@ -67,7 +67,38 @@ const schema = defineSchema(
       readme: v.optional(v.string()), // raw markdown, truncated
       images: v.optional(v.array(v.string())), // screenshots found in the readme
       readmeFetchedAt: v.optional(v.number()),
+      starGrowth7d: v.optional(v.number()), // stars gained vs ~a week ago
+      starAccel: v.optional(v.number()), // growth speeding up (+) or fading (-)
     }).index("by_repo_id", ["repoId"]),
+
+    // Daily star counts, diffed against each other so projects can rank by
+    // growth velocity instead of raw size.
+    starHistory: defineTable({
+      repoId: v.number(),
+      day: v.string(), // YYYY-MM-DD (UTC)
+      stars: v.number(),
+    })
+      .index("by_repo_day", ["repoId", "day"])
+      .index("by_day", ["day"]),
+
+    // User-curated shelves of projects. Public ones are shareable by link.
+    collections: defineTable({
+      userId: v.id("users"),
+      name: v.string(),
+      description: v.optional(v.string()),
+      repoIds: v.array(v.number()),
+      isPublic: v.boolean(),
+      createdAt: v.number(),
+      updatedAt: v.number(),
+    }).index("by_user", ["userId"]),
+
+    // Public profile opt-in: the shelf shown at /u/:userId.
+    profiles: defineTable({
+      userId: v.id("users"),
+      isPublic: v.boolean(),
+      bio: v.optional(v.string()),
+      updatedAt: v.number(),
+    }).index("by_user", ["userId"]),
 
     // One row per (user, project) the user has touched. A row with no `value`
     // means the project was shown but not rated yet.
@@ -75,6 +106,7 @@ const schema = defineSchema(
       userId: v.id("users"),
       repoId: v.number(),
       value: v.optional(v.number()), // 1-5 interest
+      implicit: v.optional(v.boolean()), // imported taste profile (e.g. stars)
       saved: v.optional(v.boolean()),
       hidden: v.optional(v.boolean()),
       seenAt: v.optional(v.number()),

@@ -83,7 +83,7 @@ const INSIDE = [
   },
   {
     title: "Saved projects",
-    body: "Everything you bookmarked, in one list you can re-rate or open on GitHub whenever you like.",
+    body: "Everything you bookmarked, in one list — plus collections you can shape into shelves and share by link.",
   },
   {
     title: "It keeps up with you",
@@ -93,13 +93,15 @@ const INSIDE = [
 
 const IN_V1 = [
   "Sign up or log in with an email code, then start rating",
+  "Import your GitHub stars as an instant taste profile",
   "An endless feed of GitHub projects with their READMEs and screenshots",
   "A 1 – 5 interest rating, plus save and dismiss on every card",
-  "One project at a time, with more picked from what you like as you explore",
+  "Projects ranked by growth — see them before they are big",
+  "Collections you can share by link, a public shelf, and a yearly wrapped",
 ];
 
 const LATER = [
-  "Following other people or sharing collections",
+  "Following other people and their shelves",
   "Comments, likes and notifications",
   "A ranking you cannot see the reasons for",
   "Sharing one account between several people",
@@ -383,7 +385,7 @@ export default function Landing() {
           <div className="mx-auto w-full max-w-5xl px-6 py-20 sm:py-24">
             <MicroLabel>What is inside</MicroLabel>
             <h2 className="mt-5 max-w-xl text-2xl font-semibold tracking-[-0.02em] text-balance sm:text-3xl">
-              Two pages, one loop.
+              A few pages, one loop.
             </h2>
 
             <div className="mt-12 grid gap-px overflow-hidden rounded-xl border border-border bg-border sm:grid-cols-3">
