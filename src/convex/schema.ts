@@ -1,6 +1,7 @@
 import { authTables } from "@convex-dev/auth/server";
 import { defineSchema, defineTable } from "convex/server";
 import { Infer, v } from "convex/values";
+import { EMBEDDING_DIMENSIONS } from "./recommender/constants";
 
 // default user roles. can add / remove based on the project as needed
 export const ROLES = {
@@ -105,6 +106,40 @@ const schema = defineSchema(
       userId: v.id("users"),
       isPublic: v.boolean(),
       bio: v.optional(v.string()),
+      updatedAt: v.number(),
+    }).index("by_user", ["userId"]),
+
+    // Semantic index over the catalog. One row per embedded repository;
+    // `textHash` makes the backfill idempotent (skip when the canonical text
+    // is unchanged) and `model`/`version` force recompute on model changes.
+    // Dimensions must equal EMBEDDING_DIMENSIONS in recommender/constants.ts.
+    // NOTE: Convex vectorSearch is action-only (verified against convex
+    // 1.42.1 types), so retrieval runs in the queue generator action (PR4),
+    // never in a reactive query.
+    repoEmbeddings: defineTable({
+      repoId: v.number(),
+      embedding: v.array(v.float64()),
+      model: v.string(),
+      version: v.number(),
+      textHash: v.string(),
+      updatedAt: v.number(),
+    })
+      .index("by_repo_id", ["repoId"])
+      .vectorIndex("by_embedding", {
+        vectorField: "embedding",
+        dimensions: EMBEDDING_DIMENSIONS,
+      }),
+
+    // Multi-interest user model: up to a handful of semantic centroids that
+    // emerge from positive behavioural evidence (never a single averaged
+    // vector, never hardcoded topics). Populated by the queue generator.
+    interestClusters: defineTable({
+      userId: v.id("users"),
+      clusterId: v.string(),
+      centroid: v.array(v.float64()),
+      weight: v.number(),
+      repoIds: v.array(v.number()),
+      label: v.optional(v.string()),
       updatedAt: v.number(),
     }).index("by_user", ["userId"]),
 

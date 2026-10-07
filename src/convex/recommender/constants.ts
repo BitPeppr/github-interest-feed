@@ -161,6 +161,26 @@ export const LANGUAGE_REPEAT_FLOOR = 0.5;
 /** Exploration shortlist multiplier: shortlist N*4, select N. */
 export const EXPLORE_SHORTLIST_FACTOR = 4;
 
+/* ------------------------- semantic pipeline ------------------------ */
+
+/**
+ * Embedding model identity. Changing the model or dimensions requires a
+ * schema change (vector index dimensions are fixed) plus a full re-backfill —
+ * bump EMBEDDING_VERSION and the backfill skips only rows already matching
+ * model+version+textHash.
+ */
+export const EMBEDDING_MODEL = "text-embedding-3-small";
+export const EMBEDDING_DIMENSIONS = 1536;
+export const EMBEDDING_VERSION = 1;
+
+/** Multi-interest model shape. */
+export const MAX_INTEREST_CLUSTERS = 5;
+export const CLUSTER_JOIN_THRESHOLD = 0.55;
+
+/** Adjacent-interest band: near enough to plausibly delight, far enough to surprise. */
+export const ADJACENT_LOW = 0.35;
+export const ADJACENT_HIGH = 0.75;
+
 /** All feature keys, so diagnostics iterate weights without drift. */
 export const FEATURE_KEYS: (keyof RankingFeatures)[] = [
   "semanticBest",
