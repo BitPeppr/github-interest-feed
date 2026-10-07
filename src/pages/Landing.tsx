@@ -14,30 +14,30 @@ const FEED_PATH = "/auth?returnTo=%2Ffeed";
 /** Sample cards that show what the feed looks like, using real GitHub art. */
 const PREVIEW_CARDS = [
   {
-    owner: "oven-sh",
-    name: "bun",
+    owner: "josefadamcik",
+    name: "SofleKeyboard",
     description:
-      "A fast all-in-one JavaScript runtime, bundler, test runner and package manager.",
-    language: "TypeScript",
-    stars: "74k",
-    forks: "2.1k",
-    heading: "What is Bun?",
+      "A split mechanical keyboard based on Lily58, CRKBD and Helix — the design a lot of people build when they get serious about ergonomics.",
+    language: "Unknown",
+    stars: "2.5k",
+    forks: "1.3k",
+    heading: "Why split?",
     readme:
-      "Bun is an all-in-one toolkit for JavaScript and TypeScript apps. It ships as a single executable called bun, and at its core is a fast runtime designed as a drop-in replacement for Node.js.",
+      "A split keyboard keeps your shoulders where they belong. Sofle combines a Lily58-style inner column set with the ergonomics of the CRKBD and Helix families, a nice OLED per side and enough room under the case for a comfortable gasket mount. Palm-half defaults to an alphanumeric layout with a thumb cluster on each side.",
     rating: 4,
   },
   {
-    owner: "astral-sh",
-    name: "uv",
+    owner: "BitPeppr",
+    name: "TriSolaris",
     description:
-      "An extremely fast Python package and project manager, written in Rust.",
-    language: "Rust",
-    stars: "41k",
-    forks: "1.1k",
-    heading: "Highlights",
+      "A three-body problem visualiser, renderer and configuration finder — gravitational chaos from a real initial state.",
+    language: "Unknown",
+    stars: "0",
+    forks: "0",
+    heading: "Stable or chaotic",
     readme:
-      "One tool to replace pip, pip-tools, pipx, poetry, pyenv and virtualenv. Ten to a hundred times faster than pip, with a global cache and a resolver that does not fight you.",
-    rating: null,
+      "Three-body problem visualiser and configuration finder. Two bodies are calm; three is where gravity starts to look like it has a personality — so the solver runs the numbers until it finds a state that stays together for the time you asked for, then renders it.",
+    rating: 5,
   },
 ];
 
@@ -268,7 +268,7 @@ export default function Landing() {
             <div className="mb-4 flex items-center justify-between">
               <MicroLabel>Your feed</MicroLabel>
               <span className="text-[11px] text-muted-foreground tabular-nums">
-                24 projects waiting · 2 rated
+                Live from GitHub · 2 of 2 rated
               </span>
             </div>
             <div className="mx-auto max-w-2xl space-y-6">
@@ -277,7 +277,8 @@ export default function Landing() {
               ))}
             </div>
             <p className="mt-6 text-center text-[11px] text-muted-foreground">
-              Rate a card, scroll to the next. That is the whole loop.
+              These are real projects from GitHub, not placeholders.
+              The real feed loads them as you go.
             </p>
           </motion.div>
         </section>
