@@ -319,6 +319,15 @@ function countBy(values: Iterable<string>, counts: Map<string, number>): void {
   }
 }
 
+/** Keeps the strongest dislike for a facet; repeated skips do not stack. */
+function lower(
+  map: Map<string, number>,
+  names: Iterable<string>,
+  amount: number,
+): void {
+  for (const name of names) map.set(name, Math.min(map.get(name) ?? 0, amount));
+}
+
 function facets(
   counts: Map<string, number>,
   limit: number,
@@ -360,29 +369,207 @@ function affinityWeight(count: number): number {
  */
 const STARS_WEIGHT = 0.35;
 const STARS_CAP = 1.4;
-const JITTER_WEIGHT = 1.2;
+const JITTER_WEIGHT = 0.9;
+/** Freshness decays like a Reddit/HN score instead of a flat recent bonus. */
+const FRESH_HALF_LIFE_DAYS = 45;
+const FRESH_WEIGHT = 1;
+const AFFINITY_TOPIC = 0.4;
+const AFFINITY_LANGUAGE = 0.6;
+const AFFINITY_OWNER = 0.6;
+/**
+ * A skip or a 1-2 rating is a far stronger statement than a 4-5, the way X
+ * weights negative actions above positive ones.
+ */
+const DISLIKE_TOPIC = -0.8;
+const DISLIKE_LANGUAGE = -1;
+const DISLIKE_OWNER = -1.6;
+/** Optimism under uncertainty: the bandit rule for under-exposed facets. */
+const EXPLORE_WEIGHT = 1.1;
+/** X's "new author boost", applied to a first sighting of a language/owner. */
+const FIRST_SIGHTING_BOOST = 0.45;
+/** Similarity cost in the reranker — X's DPP reranker, cheaply. */
+const SIMILARITY_PENALTY = 0.55;
+/** X's repeated-author decay, applied per owner inside one window. */
+const REPEAT_DECAY = 0.55;
+const REPEAT_FLOOR = 0.18;
+/** Slots in every window reserved for exploration instead of score. */
+const EXPLORE_SLOTS = 6;
+/** Scored candidates the selector chooses from, after the catalog scan. */
+const CANDIDATE_POOL = 400;
 
-/** Never lose a project to a tie: the jitter is stable per project. */
-function noveltyScore(
-  repo: Doc<"repos">,
-  topicAffinity: Map<string, number>,
-  languageAffinity: Map<string, number>,
-  now: number,
-): number {
+/** 1 while a project is fresh, 0.5 at the half-life, →0 as it ages. */
+function freshness(pushedAt: number | undefined, now: number): number {
+  if (!pushedAt) return 0;
+  const ageDays = Math.max(0, (now - pushedAt) / 86_400_000);
+  return 0.5 ** (ageDays / FRESH_HALF_LIFE_DAYS);
+}
+
+/**
+ * Optimism under uncertainty (the bandit rule): a facet the viewer has barely
+ * been shown can still teach the feed something, so it is worth surfacing.
+ */
+function optimism(impressions: number, total: number): number {
+  return Math.sqrt(Math.log(total + 2) / (1 + impressions));
+}
+
+/** Everything a similarity check cares about: topics, language and owner. */
+function facetsOf(repo: Doc<"repos">): Set<string> {
+  const facets = new Set<string>();
+  for (const topic of repo.topics) facets.add(`t:${topic}`);
+  if (repo.language) facets.add(`l:${repo.language}`);
+  facets.add(`o:${repo.owner}`);
+  return facets;
+}
+
+function jaccard(a: Set<string>, b: Set<string>): number {
+  let shared = 0;
+  for (const value of a) if (b.has(value)) shared += 1;
+  return shared / (a.size + b.size - shared);
+}
+
+/** How much of a project's facets the viewer has never been shown at all. */
+function unexploredness(repo: Doc<"repos">, signals: Signals): number {
+  let novelty = 0;
+  if (repo.language && (signals.languageSeen.get(repo.language) ?? 0) === 0) {
+    novelty += 1;
+  }
+  if ((signals.ownerSeen.get(repo.owner) ?? 0) === 0) novelty += 1;
+  if (repo.topics.length > 0) {
+    let sum = 0;
+    for (const topic of repo.topics) {
+      sum += optimism(signals.topicSeen.get(topic) ?? 0, signals.totalImpressions);
+    }
+    novelty += sum / repo.topics.length;
+  }
+  return novelty;
+}
+
+interface Signals {
+  now: number;
+  totalImpressions: number;
+  topicAffinity: Map<string, number>;
+  languageAffinity: Map<string, number>;
+  ownerAffinity: Map<string, number>;
+  topicDislike: Map<string, number>;
+  languageDislike: Map<string, number>;
+  ownerDislike: Map<string, number>;
+  topicSeen: Map<string, number>;
+  languageSeen: Map<string, number>;
+  ownerSeen: Map<string, number>;
+}
+
+interface Scored {
+  repo: Doc<"repos">;
+  score: number;
+  /** How much of this project the viewer has never been shown. */
+  explore: number;
+  facets: Set<string>;
+}
+
+/**
+ * One weighted sum over the signals we have — the same shape as X's
+ * `RankingScorer`, which blends predicted actions into a single score.
+ */
+function scoreProject(repo: Doc<"repos">, signals: Signals): number {
   if (repo.archived) return -100;
 
   let score = Math.min(Math.log10(repo.stars + 1) * STARS_WEIGHT, STARS_CAP);
-  if (repo.pushedAt && now - repo.pushedAt < 120 * 24 * 60 * 60 * 1000) {
-    score += 0.6;
-  }
+  score += freshness(repo.pushedAt, signals.now) * FRESH_WEIGHT;
+
+  // A project is as interesting as its best topic, not the sum of all twelve:
+  // otherwise a repo tagged with everything outranks one tagged honestly.
+  let topicAffinityMax = 0;
+  let topicDislikeMax = 0;
+  let topicExplore = 0;
   for (const topic of repo.topics) {
-    score += affinityWeight(topicAffinity.get(topic) ?? 0) * 0.4;
+    topicAffinityMax = Math.max(topicAffinityMax, signals.topicAffinity.get(topic) ?? 0);
+    topicDislikeMax = Math.min(topicDislikeMax, signals.topicDislike.get(topic) ?? 0);
+    topicExplore += optimism(signals.topicSeen.get(topic) ?? 0, signals.totalImpressions);
   }
+  score += affinityWeight(topicAffinityMax) * AFFINITY_TOPIC;
+  score += topicDislikeMax;
+  if (repo.topics.length > 0) {
+    score += (topicExplore / repo.topics.length) * EXPLORE_WEIGHT * 0.4;
+  }
+
   if (repo.language) {
-    score += affinityWeight(languageAffinity.get(repo.language) ?? 0) * 0.6;
+    const seen = signals.languageSeen.get(repo.language) ?? 0;
+    score += affinityWeight(signals.languageAffinity.get(repo.language) ?? 0) * AFFINITY_LANGUAGE;
+    score += signals.languageDislike.get(repo.language) ?? 0;
+    score += optimism(seen, signals.totalImpressions) * EXPLORE_WEIGHT * 0.8;
+    if (seen === 0) score += FIRST_SIGHTING_BOOST;
   }
+
+  const ownerSeen = signals.ownerSeen.get(repo.owner) ?? 0;
+  score += affinityWeight(signals.ownerAffinity.get(repo.owner) ?? 0) * AFFINITY_OWNER;
+  score += signals.ownerDislike.get(repo.owner) ?? 0;
+  score += optimism(ownerSeen, signals.totalImpressions) * EXPLORE_WEIGHT * 0.5;
+  if (ownerSeen === 0) score += FIRST_SIGHTING_BOOST;
+
+  // Never lose a project to a tie: the jitter is stable per project.
   score += ((repo.repoId % 997) / 997) * JITTER_WEIGHT;
   return score;
+}
+
+/**
+ * Greedy reranker. X's `vm-ranker` reorders scored posts with a determinantal
+ * point process so neighbours are less alike — "giving up a little score for
+ * less similarity" — and decays a repeated author's posts. This is the cheap
+ * version of both: take the project that is worth the most after subtracting
+ * its similarity to the window, and decay owners already in it.
+ */
+function selectWindow(pool: Scored[], size: number): Scored[] {
+  const chosen: Scored[] = [];
+  const remaining = [...pool];
+  const ownerRepeats = new Map<string, number>();
+
+  while (chosen.length < size && remaining.length > 0) {
+    let bestIndex = 0;
+    let bestValue = -Infinity;
+
+    for (let index = 0; index < remaining.length; index += 1) {
+      const entry = remaining[index];
+      let similarity = 0;
+      for (const picked of chosen) {
+        similarity = Math.max(similarity, jaccard(entry.facets, picked.facets));
+      }
+      const repeats = ownerRepeats.get(entry.repo.owner) ?? 0;
+      const decay = repeats === 0 ? 1 : Math.max(REPEAT_FLOOR, REPEAT_DECAY ** repeats);
+      const value = (entry.score - SIMILARITY_PENALTY * similarity) * decay;
+      if (value > bestValue) {
+        bestValue = value;
+        bestIndex = index;
+      }
+    }
+
+    const [picked] = remaining.splice(bestIndex, 1);
+    chosen.push(picked);
+    ownerRepeats.set(picked.repo.owner, (ownerRepeats.get(picked.repo.owner) ?? 0) + 1);
+  }
+
+  return chosen;
+}
+
+/** Spread exploration picks through the window instead of bunching them up. */
+function interleave(explore: Scored[], ranked: Scored[], size: number): Scored[] {
+  if (explore.length === 0) return ranked.slice(0, size);
+  const every = Math.max(1, Math.round(size / explore.length));
+  const out: Scored[] = [];
+  let e = 0;
+  let r = 0;
+  while (out.length < size && (e < explore.length || r < ranked.length)) {
+    if (e < explore.length && out.length % every === 0) {
+      out.push(explore[e]);
+      e += 1;
+    } else if (r < ranked.length) {
+      out.push(ranked[r]);
+      r += 1;
+    } else {
+      out.push(explore[e]);
+      e += 1;
+    }
+  }
+  return out;
 }
 
 /* ------------------------------------------------------------------ *
@@ -453,36 +640,91 @@ export const discovery = query({
       .withIndex("by_user", (q) => q.eq("userId", userId))
       .collect();
     const touched = new Set(rows.map((row) => row.repoId));
-    const loved = new Set(
-      rows.filter((row) => (row.value ?? 0) >= 4).map((row) => row.repoId),
-    );
-
     const repos = await ctx.db.query("repos").collect();
-    const candidates = repos.filter((repo) => !touched.has(repo.repoId));
-    const unseenCandidates = excludeRepoIds?.length
-      ? candidates.filter((repo) => !excludeRepoIds.includes(repo.repoId))
-      : candidates;
+    const byId = new Map(repos.map((repo) => [repo.repoId, repo]));
 
-    const topicAffinity = new Map<string, number>();
-    const languageAffinity = new Map<string, number>();
-    for (const repo of repos) {
-      if (!loved.has(repo.repoId)) continue;
-      countBy(repo.topics, topicAffinity);
-      if (repo.language) countBy([repo.language], languageAffinity);
+    const signals: Signals = {
+      now: Date.now(),
+      totalImpressions: 0,
+      topicAffinity: new Map(),
+      languageAffinity: new Map(),
+      ownerAffinity: new Map(),
+      topicDislike: new Map(),
+      languageDislike: new Map(),
+      ownerDislike: new Map(),
+      topicSeen: new Map(),
+      languageSeen: new Map(),
+      ownerSeen: new Map(),
+    };
+
+    for (const row of rows) {
+      const repo = byId.get(row.repoId);
+      if (!repo) continue;
+
+      // Every row is one impression, which is what "exposure" means here.
+      // Counting it from the catalog we already read costs no extra queries.
+      signals.totalImpressions += 1;
+      countBy(repo.topics, signals.topicSeen);
+      if (repo.language) countBy([repo.language], signals.languageSeen);
+      countBy([repo.owner], signals.ownerSeen);
+
+      if ((row.value ?? 0) >= 4) {
+        countBy(repo.topics, signals.topicAffinity);
+        if (repo.language) countBy([repo.language], signals.languageAffinity);
+        countBy([repo.owner], signals.ownerAffinity);
+        continue;
+      }
+
+      const skipped = row.hidden === true;
+      const uninteresting = typeof row.value === "number" && row.value <= 2;
+      if (!skipped && !uninteresting) continue;
+      // A skip says more than a low score does.
+      const weight = skipped ? 1 : 0.6;
+      lower(signals.topicDislike, repo.topics, DISLIKE_TOPIC * weight);
+      if (repo.language) {
+        lower(signals.languageDislike, [repo.language], DISLIKE_LANGUAGE * weight);
+      }
+      lower(signals.ownerDislike, [repo.owner], DISLIKE_OWNER * weight);
     }
 
-    const now = Date.now();
-    const window = unseenCandidates
-      .map((repo) => ({
-        repoId: repo.repoId,
-        score: noveltyScore(repo, topicAffinity, languageAffinity, now),
-      }))
-      .sort((a, b) => b.score - a.score || a.repoId - b.repoId)
-      .slice(0, Math.max(1, Math.min(limit ?? FEED_WINDOW, FEED_WINDOW)));
+    const excluded = new Set(excludeRepoIds ?? []);
+    const candidates = repos.filter(
+      (repo) => !touched.has(repo.repoId) && !excluded.has(repo.repoId),
+    );
+
+    const size = Math.max(1, Math.min(limit ?? FEED_WINDOW, FEED_WINDOW));
+    const scored: Scored[] = candidates.map((repo) => ({
+      repo,
+      score: scoreProject(repo, signals),
+      explore: unexploredness(repo, signals),
+      facets: facetsOf(repo),
+    }));
+
+    const pool = scored
+      .sort((a, b) => b.score - a.score || a.repo.repoId - b.repo.repoId)
+      .slice(0, CANDIDATE_POOL);
+
+    // A slice of every window is chosen for exploration rather than for score,
+    // from the facets the viewer has never met — the bandit-style half of the
+    // feed that keeps whole domains from staying invisible forever.
+    const exploreSlots = Math.min(EXPLORE_SLOTS, Math.max(1, Math.floor(size / 3)));
+    const explorers = selectWindow(
+      pool
+        .filter((entry) => entry.explore >= 1)
+        .sort((a, b) => b.explore - a.explore || b.score - a.score)
+        .slice(0, exploreSlots * 4),
+      exploreSlots,
+    );
+    const exploreIds = new Set(explorers.map((entry) => entry.repo.repoId));
+    const ranked = selectWindow(
+      pool.filter((entry) => !exploreIds.has(entry.repo.repoId)),
+      size - explorers.length,
+    );
+    const window = interleave(explorers, ranked, size);
 
     return {
-      repoIds: window.map((entry) => entry.repoId),
-      remaining: candidates.length,
+      repoIds: window.map((entry) => entry.repo.repoId),
+      remaining: Math.max(0, candidates.length - window.length),
       catalogSize: repos.length,
       rated: rows.filter((row) => typeof row.value === "number").length,
     };
