@@ -21,6 +21,24 @@ function readmeOverlayOpen() {
   return document.querySelector("[data-readme-overlay]") !== null;
 }
 
+/**
+ * Cards are taller than the viewport, so the page scrolls inside a card. The
+ * wheel/touch handlers only flip to the next project at the scroll edges;
+ * anywhere in between, scrolling is just scrolling.
+ */
+const EDGE_SLACK = 32;
+
+function atScrollTop() {
+  return window.scrollY <= EDGE_SLACK;
+}
+
+function atScrollBottom() {
+  return (
+    window.innerHeight + window.scrollY >=
+    document.documentElement.scrollHeight - EDGE_SLACK
+  );
+}
+
 const FETCH_COOLDOWN_MS = 8_000;
 const DISCOVERY_LIMIT = 24;
 const KEEP_PREVIOUS = 4;
@@ -108,6 +126,8 @@ export default function Feed() {
       setActiveIndex(newIndex - KEEP_PREVIOUS);
       setBaseIndex((current) => current + KEEP_PREVIOUS);
     }
+    // Every card starts from its top, however tall the last one was.
+    window.scrollTo(0, 0);
   }, [activeIndex, ids]);
 
   const previous = useCallback(() => {
@@ -115,6 +135,7 @@ export default function Feed() {
     setDirection(-1);
     if (activeIndex > 0) {
       setActiveIndex((index) => Math.max(0, index - 1));
+      window.scrollTo(0, 0);
       return;
     }
     const restore = previousIds.slice(-KEEP_PREVIOUS);
@@ -122,6 +143,7 @@ export default function Feed() {
     setIds((current) => [...restore, ...current]);
     setBaseIndex((current) => Math.max(0, current - restore.length));
     setActiveIndex(restore.length - 1);
+    window.scrollTo(0, 0);
   }, [activeIndex, previousIds]);
 
   useEffect(() => {
@@ -141,10 +163,14 @@ export default function Feed() {
       // The README dialog owns the keyboard while it is open.
       if (readmeOverlayOpen()) return;
       if (event.key === "ArrowDown" || event.key === "PageDown") {
+        // Mid-card the arrows scroll the page like always; at the bottom they
+        // flip to the next project.
+        if (!atScrollBottom()) return;
         event.preventDefault();
         next();
       }
       if (event.key === "ArrowUp" || event.key === "PageUp") {
+        if (!atScrollTop()) return;
         event.preventDefault();
         previous();
       }
@@ -207,16 +233,19 @@ export default function Feed() {
           if (start === null || end === undefined) return;
           if (readmeOverlayOpen()) return;
           const delta = start - end;
-          if (delta > 65) next();
-          if (delta < -65) previous();
+          // Only a swipe from the very bottom of a card advances it.
+          if (delta > 65 && atScrollBottom()) next();
+          if (delta < -65 && atScrollTop()) previous();
         }}
         onWheel={(event) => {
           if (readmeOverlayOpen()) return;
           if (Math.abs(event.deltaY) < 40) return;
+          const scrollingDown = event.deltaY > 0;
+          if (scrollingDown ? !atScrollBottom() : !atScrollTop()) return;
           const now = Date.now();
           if (now - lastWheel.current < 650) return;
           lastWheel.current = now;
-          if (event.deltaY > 0) next();
+          if (scrollingDown) next();
           else previous();
         }}
       >

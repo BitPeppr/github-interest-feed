@@ -283,7 +283,7 @@ export default function Landing() {
                   className="absolute -bottom-1 left-0 h-2.5 w-full overflow-visible"
                 >
                   <motion.path
-                    d="M2 8 C 42 2, 82 11, 120 5 S 192 2, 218 7"
+                    d="M3 7 C 60 2, 120 11, 217 5"
                     fill="none"
                     stroke="currentColor"
                     strokeWidth="2.5"
@@ -310,7 +310,7 @@ export default function Landing() {
             </p>
             <div className="mt-8 flex flex-wrap items-center gap-2">
               <span className="mr-1 font-mono text-[11px] tracking-[0.16em] text-muted-foreground uppercase">
-                Already in the feed
+                Waiting for you
               </span>
               {TOPIC_TAGS.map((topic) => (
                 <span
