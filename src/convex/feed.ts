@@ -237,8 +237,8 @@ export const removeTopic = mutation({
  * Nothing here is limited to the user's topics — those only add weight.
  */
 export const discovery = query({
-  args: {},
-  handler: async (ctx) => {
+  args: { excludeRepoIds: v.optional(v.array(v.number())), limit: v.optional(v.number()) },
+  handler: async (ctx, { excludeRepoIds, limit }) => {
     const userId = await getAuthUserId(ctx);
     if (!userId) return null;
 
@@ -253,6 +253,9 @@ export const discovery = query({
 
     const repos = await ctx.db.query("repos").collect();
     const candidates = repos.filter((repo) => !touched.has(repo.repoId));
+    const unseenCandidates = excludeRepoIds?.length
+      ? candidates.filter((repo) => !excludeRepoIds.includes(repo.repoId))
+      : candidates;
 
     const topicAffinity = new Map<string, number>();
     const languageAffinity = new Map<string, number>();
@@ -263,13 +266,13 @@ export const discovery = query({
     }
 
     const now = Date.now();
-    const window = candidates
+    const window = unseenCandidates
       .map((repo) => ({
         repoId: repo.repoId,
         score: noveltyScore(repo, topicAffinity, languageAffinity, now),
       }))
       .sort((a, b) => b.score - a.score || a.repoId - b.repoId)
-      .slice(0, FEED_WINDOW);
+      .slice(0, Math.max(1, Math.min(limit ?? FEED_WINDOW, FEED_WINDOW)));
 
     return {
       repoIds: window.map((entry) => entry.repoId),

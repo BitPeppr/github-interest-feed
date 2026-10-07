@@ -77,7 +77,7 @@ export default function Catalog() {
 
   return (
     <div className="min-h-screen bg-background text-foreground">
-      <AppHeader active="catalog" />
+      <AppHeader active="feed" />
 
       <motion.main
         initial={{ opacity: 0 }}

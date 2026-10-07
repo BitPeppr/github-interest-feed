@@ -7,9 +7,8 @@ import { useAuth } from "@/hooks/use-auth";
 import { cn } from "@/lib/utils";
 
 const NAV = [
-  { href: "/feed", label: "Feed", key: "feed" },
-  { href: "/catalog", label: "Catalog", key: "catalog" },
-  { href: "/dashboard", label: "Dashboard", key: "dashboard" },
+  { href: "/feed", label: "Explore", key: "feed" },
+  { href: "/dashboard", label: "Saved", key: "dashboard" },
 ] as const;
 
 export type AppSection = (typeof NAV)[number]["key"];

@@ -65,7 +65,7 @@ const INSIDE = [
     body: "One card at a time: screenshots, the README, and a rating. Scroll past anything and it never returns.",
   },
   {
-    title: "The catalog",
+    title: "Endless discovery",
     body: "Everything the feed has turned up so far, searchable by name, language or topic.",
   },
   {
@@ -78,7 +78,7 @@ const IN_V1 = [
   "Sign up or log in with an email code, then start rating",
   "An endless feed of GitHub projects with their READMEs and screenshots",
   "A 1 – 5 interest rating, plus save and dismiss on every card",
-  "A catalog you can browse and search, and a dashboard for your library",
+  "One project at a time, with more picked from what you like as you explore",
 ];
 
 const LATER = [
@@ -217,7 +217,7 @@ export default function Landing() {
               className="hidden text-muted-foreground hover:text-foreground md:inline-flex"
               asChild
             >
-              <Link to="/catalog">Catalog</Link>
+              <Link to="/feed">Explore</Link>
             </Button>
             <Button
               variant="ghost"
@@ -426,7 +426,7 @@ export default function Landing() {
         <div className="mx-auto flex w-full max-w-5xl flex-col gap-3 px-6 py-8 sm:flex-row sm:items-center sm:justify-between">
           <Wordmark />
           <p className="text-[11px] tracking-[0.12em] text-muted-foreground uppercase">
-            Version 1 · Feed, catalog and dashboard
+            Version 1 · Explore and saved projects
           </p>
         </div>
       </footer>

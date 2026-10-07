@@ -13,7 +13,6 @@ const Landing = lazy(() => import("./pages/Landing.tsx"));
 const AuthPage = lazy(() => import("./pages/Auth.tsx"));
 const Feed = lazy(() => import("./pages/Feed.tsx"));
 const Dashboard = lazy(() => import("./pages/Dashboard.tsx"));
-const Catalog = lazy(() => import("./pages/Catalog.tsx"));
 const NotFound = lazy(() => import("./pages/NotFound.tsx"));
 
 // Simple loading fallback for route transitions
@@ -159,17 +158,6 @@ createRoot(document.getElementById("root")!).render(
                     description="Your totals, your library and the topics steering your feed live here."
                   >
                     <Dashboard />
-                  </RequireAuth>
-                }
-              />
-              <Route
-                path="/catalog"
-                element={
-                  <RequireAuth
-                    title="Sign in to browse the catalog"
-                    description="The catalog holds every project your feed has turned up so far."
-                  >
-                    <Catalog />
                   </RequireAuth>
                 }
               />

@@ -18,13 +18,15 @@ interface InterestScaleProps {
   value: number | null;
   onRate: (value: number) => void;
   onClear: () => void;
+  onRated?: () => void;
+  autoAdvance?: boolean;
 }
 
 /**
  * Five dots, filled up to the chosen level. Hovering previews a level without
  * committing it, so the control stays quiet until the user decides.
  */
-export function InterestScale({ value, onRate, onClear }: InterestScaleProps) {
+export function InterestScale({ value, onRate, onClear, onRated, autoAdvance = false }: InterestScaleProps) {
   const [preview, setPreview] = useState<number | null>(null);
   const shown = preview ?? value ?? 0;
   const label = value ? INTEREST_LABELS[value - 1] : "Rate";
@@ -48,7 +50,10 @@ export function InterestScale({ value, onRate, onClear }: InterestScaleProps) {
             onMouseEnter={() => setPreview(level)}
             onFocus={() => setPreview(level)}
             onBlur={() => setPreview(null)}
-            onClick={() => onRate(level)}
+            onClick={() => {
+              onRate(level);
+              if (autoAdvance && onRated) window.setTimeout(onRated, 180);
+            }}
             className={cn(
               "flex size-8 items-center justify-center rounded-full border transition-colors focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none active:scale-95 sm:size-7",
               value === level

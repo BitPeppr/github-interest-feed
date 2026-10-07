@@ -1,306 +1,270 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useAction, useMutation, useQuery } from "convex/react";
-import { motion } from "framer-motion";
+import { AnimatePresence, motion } from "framer-motion";
 import { RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 
 import { AppHeader } from "@/components/app-header";
+import { ReelCard } from "@/components/feed/reel-card";
 import { Loading } from "@/components/feed/loading";
-import { ProjectCard } from "@/components/feed/project-card";
-import type { Project } from "@/components/feed/types";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { api } from "@/convex/_generated/api";
 import { errorText } from "@/lib/format";
 
-const MAX_QUEUE = 24;
-const LOW_POOL = 12;
-const REFILL_COOLDOWN_MS = 20_000;
-const SEEN_BATCH = 8;
-const SEEN_INTERVAL_MS = 1200;
+const FETCH_COOLDOWN_MS = 8_000;
+const DISCOVERY_LIMIT = 24;
+const KEEP_PREVIOUS = 4;
+const PRUNE_AFTER = 8;
 
 export default function Feed() {
-  const discovery = useQuery(api.feed.discovery);
   const [ids, setIds] = useState<number[]>([]);
-  const [dismissed, setDismissed] = useState<Set<number>>(() => new Set());
-  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const [baseIndex, setBaseIndex] = useState(0);
+  const [previousIds, setPreviousIds] = useState<number[]>([]);
+  const [excluded, setExcluded] = useState<Set<number>>(() => new Set());
+  const [savedOverrides, setSavedOverrides] = useState<Map<number, boolean>>(() => new Map());
+  const [isFetching, setIsFetching] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
-  const [pendingRatings, setPendingRatings] = useState<Map<number, number | null>>(
-    () => new Map(),
-  );
-  const [pendingSaved, setPendingSaved] = useState<Map<number, boolean>>(
-    () => new Map(),
-  );
 
-  const idsRef = useRef<number[]>([]);
-  const queued = useRef(new Set<number>());
-  const seen = useRef(new Set<number>());
-  const passed = useRef(new Set<number>());
-  const pendingSeen = useRef(new Set<number>());
-  const seenTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const nodes = useRef(new Map<number, HTMLElement>());
-  const sentinel = useRef<HTMLDivElement | null>(null);
   const fetching = useRef(false);
-  const lastAttempt = useRef(0);
+  const lastFetch = useRef(0);
+  const seen = useRef(new Set<number>());
+  const queued = useRef(new Set<number>());
+  const touchStart = useRef<number | null>(null);
+  const lastWheel = useRef(0);
 
-  useEffect(() => {
-    idsRef.current = ids;
-  }, [ids]);
-
+  const shouldDiscover = ids.length === 0 || activeIndex >= ids.length - 5;
+  const discovery = useQuery(
+    api.feed.discovery,
+    shouldDiscover
+      ? { excludeRepoIds: [...ids, ...excluded], limit: DISCOVERY_LIMIT }
+      : "skip",
+  );
+  const repoId = ids[activeIndex];
   const projects = useQuery(
     api.feed.projects,
-    ids.length > 0 ? { repoIds: ids } : "skip",
+    repoId === undefined ? "skip" : { repoIds: [repoId] },
   );
+  const project = projects?.items.find((item) => item.repoId === repoId);
+
   const markSeen = useMutation(api.feed.markSeen);
-  const setSaved = useMutation(api.feed.setSaved);
-  const setHidden = useMutation(api.feed.setHidden);
   const setRating = useMutation(api.feed.setRating);
   const clearRating = useMutation(api.feed.clearRating);
+  const setSaved = useMutation(api.feed.setSaved);
+  const setHidden = useMutation(api.feed.setHidden);
   const fetchMore = useAction(api.github.fetchMore);
 
   useEffect(() => {
-    if (!discovery) return;
-    const fresh = discovery.repoIds.filter(
-      (id) => !queued.current.has(id) && !dismissed.has(id),
+    if (!shouldDiscover || !discovery) return;
+    const additions = discovery.repoIds.filter(
+      (id) => !queued.current.has(id) && !excluded.has(id),
     );
-    if (fresh.length === 0) return;
-    setIds((previous) => {
-      const added = fresh.slice(0, Math.max(0, MAX_QUEUE - previous.length));
-      added.forEach((id) => queued.current.add(id));
-      return added.length ? [...previous, ...added] : previous;
-    });
-  }, [discovery, dismissed]);
+    if (!additions.length) return;
+    additions.forEach((id) => queued.current.add(id));
+    const timer = window.setTimeout(() => {
+      setIds((current) => [...current, ...additions.filter((id) => !current.includes(id))]);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [discovery, excluded, shouldDiscover]);
 
-  const flushSeen = useCallback(() => {
-    seenTimer.current = null;
-    const batch = [...pendingSeen.current];
-    pendingSeen.current.clear();
-    if (batch.length > 0) void markSeen({ repoIds: batch }).catch(() => {});
-  }, [markSeen]);
-
-  const handleSeen = useCallback(
-    (repoId: number) => {
-      if (seen.current.has(repoId)) return;
-      seen.current.add(repoId);
-      pendingSeen.current.add(repoId);
-      if (pendingSeen.current.size >= SEEN_BATCH) flushSeen();
-      else if (!seenTimer.current) {
-        seenTimer.current = setTimeout(flushSeen, SEEN_INTERVAL_MS);
-      }
-    },
-    [flushSeen],
-  );
-
-  useEffect(
-    () => () => {
-      if (seenTimer.current) clearTimeout(seenTimer.current);
-      const batch = [...pendingSeen.current];
-      pendingSeen.current.clear();
-      if (batch.length > 0) void markSeen({ repoIds: batch }).catch(() => {});
-    },
-    [markSeen],
-  );
-
-  const loadMore = useCallback(async () => {
+  const loadMore = useCallback(async (force = false) => {
     if (fetching.current) return;
+    if (!force && Date.now() - lastFetch.current < FETCH_COOLDOWN_MS) return;
     fetching.current = true;
-    setIsLoadingMore(true);
-    lastAttempt.current = Date.now();
+    lastFetch.current = Date.now();
+    setIsFetching(true);
+    setProblem(null);
     try {
       const result = await fetchMore({ count: 2 });
-      setProblem(result.errors.length > 0 ? result.errors[0].message : null);
+      if (result.errors.length) setProblem(result.errors[0].message);
     } catch (error) {
       setProblem(errorText(error));
     } finally {
       fetching.current = false;
-      setIsLoadingMore(false);
+      setIsFetching(false);
     }
   }, [fetchMore]);
 
-  useEffect(() => {
-    if (!discovery || ids.length >= MAX_QUEUE) return;
-    if (discovery.remaining >= LOW_POOL || fetching.current) return;
-    if (Date.now() - lastAttempt.current < REFILL_COOLDOWN_MS) return;
-    void loadMore();
-  }, [discovery, ids.length, loadMore]);
+  const next = useCallback(() => {
+    if (activeIndex >= ids.length - 1) return;
+    const newIndex = activeIndex + 1;
+    setActiveIndex(newIndex);
+    if (newIndex >= PRUNE_AFTER) {
+      const removed = ids.slice(0, KEEP_PREVIOUS);
+      setPreviousIds((previous) => [...previous.slice(-KEEP_PREVIOUS), ...removed]);
+      setIds((current) => current.slice(KEEP_PREVIOUS));
+      setActiveIndex(newIndex - KEEP_PREVIOUS);
+      setBaseIndex((current) => current + KEEP_PREVIOUS);
+    }
+  }, [activeIndex, ids]);
+
+  const previous = useCallback(() => {
+    if (activeIndex > 0) {
+      setActiveIndex((index) => Math.max(0, index - 1));
+      return;
+    }
+    if (previousIds.length === 0) return;
+    const restore = previousIds.slice(-KEEP_PREVIOUS);
+    setPreviousIds((current) => current.slice(0, -restore.length));
+    setIds((current) => [...restore, ...current]);
+    setBaseIndex((current) => Math.max(0, current - restore.length));
+    setActiveIndex(restore.length - 1);
+  }, [activeIndex, previousIds]);
 
   useEffect(() => {
-    const node = sentinel.current;
-    if (!node) return;
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries.some((entry) => entry.isIntersecting)) void loadMore();
-      },
-      { rootMargin: "600px" },
-    );
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, [loadMore]);
+    if (repoId === undefined || seen.current.has(repoId)) return;
+    seen.current.add(repoId);
+    void markSeen({ repoIds: [repoId] }).catch(() => {});
+  }, [markSeen, repoId]);
 
-  const handleRate = useCallback(
-    (repoId: number, value: number) => {
-      setPendingRatings((current) => new Map(current).set(repoId, value));
-      void setRating({ repoId, value }).catch((error) => {
-        setPendingRatings((current) => {
-          const next = new Map(current);
-          next.delete(repoId);
-          return next;
-        });
-        toast.error(errorText(error));
-      });
-    },
-    [setRating],
-  );
-  const handleClear = useCallback(
-    (repoId: number) => {
-      setPendingRatings((current) => new Map(current).set(repoId, null));
-      void clearRating({ repoId }).catch((error) => {
-        setPendingRatings((current) => {
-          const next = new Map(current);
-          next.delete(repoId);
-          return next;
-        });
-        toast.error(errorText(error));
-      });
-    },
-    [clearRating],
-  );
-  const handleToggleSaved = useCallback(
-    (repoId: number, saved: boolean) => {
-      setPendingSaved((current) => new Map(current).set(repoId, saved));
-      void setSaved({ repoId, saved }).catch((error) => {
-        setPendingSaved((current) => {
-          const next = new Map(current);
-          next.delete(repoId);
-          return next;
-        });
-        toast.error(errorText(error));
-      });
-    },
-    [setSaved],
-  );
+  useEffect(() => {
+    if (!shouldDiscover || !discovery || discovery.repoIds.length > 0 || isFetching || problem) return;
+    const timer = window.setTimeout(() => void loadMore(), 0);
+    return () => window.clearTimeout(timer);
+  }, [discovery, isFetching, loadMore, problem, shouldDiscover]);
 
-  const handleHide = useCallback(
-    (repoId: number) => {
-      setDismissed((current) => new Set(current).add(repoId));
-      void setHidden({ repoId, hidden: true }).catch((error) =>
-        toast.error(errorText(error)),
-      );
-      toast("Skipped.", {
-        action: {
-          label: "Undo",
-          onClick: () => {
-            setDismissed((current) => {
-              const next = new Set(current);
-              next.delete(repoId);
-              return next;
-            });
-            void setHidden({ repoId, hidden: false }).catch(() => {});
-          },
-        },
-      });
-    },
-    [setHidden],
-  );
+  useEffect(() => {
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "ArrowDown" || event.key === "PageDown") {
+        event.preventDefault();
+        next();
+      }
+      if (event.key === "ArrowUp" || event.key === "PageUp") {
+        event.preventDefault();
+        previous();
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [next, previous]);
 
-  const handlePassed = useCallback((repoId: number) => {
-    if (passed.current.has(repoId)) return;
-    passed.current.add(repoId);
-    setIds((current) => {
-      if (current.length <= LOW_POOL) return current;
-      return current.filter((id) => id !== repoId);
+  const rate = useCallback((id: number, value: number) => {
+    void setRating({ repoId: id, value }).catch((error) => toast.error(errorText(error)));
+  }, [setRating]);
+  const clear = useCallback((id: number) => {
+    void clearRating({ repoId: id }).catch((error) => toast.error(errorText(error)));
+  }, [clearRating]);
+  const toggleSaved = useCallback((id: number, saved: boolean) => {
+    setSavedOverrides((current) => new Map(current).set(id, saved));
+    void setSaved({ repoId: id, saved }).catch((error) => {
+      setSavedOverrides((current) => {
+        const next = new Map(current);
+        next.delete(id);
+        return next;
+      });
+      toast.error(errorText(error));
     });
-  }, []);
+  }, [setSaved]);
+  const skip = useCallback((id: number) => {
+    setExcluded((current) => new Set(current).add(id));
+    setIds((current) => current.filter((currentId) => currentId !== id));
+    void setHidden({ repoId: id, hidden: true })
+      .then(() => setExcluded((current) => {
+        const next = new Set(current);
+        next.delete(id);
+        return next;
+      }))
+      .catch((error) => toast.error(errorText(error)));
+  }, [setHidden]);
 
-  const goTo = useCallback(
-    (index: number) => {
-      const node = nodes.current.get(idsRef.current[index]);
-      if (node) node.scrollIntoView({ behavior: "smooth", block: "start" });
-      else void loadMore();
-    },
-    [loadMore],
-  );
-  const registerNode = useCallback(
-    (repoId: number, node: HTMLElement | null) => {
-      if (node) nodes.current.set(repoId, node);
-      else nodes.current.delete(repoId);
-    },
-    [],
-  );
-
-  const cards = useMemo(() => {
-    const byId = new Map((projects?.items ?? []).map((item) => [item.repoId, item]));
-    return ids
-      .filter((id) => !dismissed.has(id))
-      .map((id) => byId.get(id))
-      .filter((item): item is Project => item !== undefined);
-  }, [projects, ids, dismissed]);
+  const error = problem ? (
+    <div className="mb-4 flex items-center justify-between gap-3 rounded-lg border border-border px-3 py-2 text-xs">
+      <span className="text-muted-foreground">{problem}</span>
+      <Button variant="outline" size="sm" onClick={() => void loadMore(true)}>
+        <RefreshCw className="mr-2 size-3.5" />Retry
+      </Button>
+    </div>
+  ) : null;
 
   return (
     <div className="min-h-screen bg-background text-foreground">
       <AppHeader active="feed" />
-      <motion.main
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={{ duration: 0.12, ease: "easeOut" }}
-        className="mx-auto w-full max-w-2xl px-4 py-6 sm:px-6 lg:py-8"
+      <main
+        className="mx-auto flex min-h-[calc(100svh-56px)] w-full max-w-4xl flex-col px-4 py-5 sm:px-6"
+        onTouchStart={(event) => { touchStart.current = event.touches[0]?.clientY ?? null; }}
+        onTouchEnd={(event) => {
+          const start = touchStart.current;
+          const end = event.changedTouches[0]?.clientY;
+          if (start === null || end === undefined) return;
+          if (event.target instanceof Element && event.target.closest("[data-radix-dialog-content]")) return;
+          const delta = start - end;
+          if (delta > 65) next();
+          if (delta < -65) previous();
+        }}
+        onWheel={(event) => {
+          if (event.target instanceof Element && event.target.closest("[data-radix-dialog-content]")) return;
+          if (Math.abs(event.deltaY) < 40) return;
+          const now = Date.now();
+          if (now - lastWheel.current < 650) return;
+          lastWheel.current = now;
+          if (event.deltaY > 0) next();
+          else previous();
+        }}
       >
-        <div className="flex flex-wrap items-end justify-between gap-4">
+        <div className="mb-3 flex items-center justify-between gap-3">
           <div>
-            <h1 className="text-2xl font-semibold tracking-[-0.02em]">Feed</h1>
-            <p className="mt-1 text-sm text-muted-foreground">Rate projects. Save the good ones.</p>
+            <h1 className="text-xl font-semibold tracking-tight">Explore</h1>
+            <p className="text-xs text-muted-foreground">One project at a time</p>
           </div>
-          <p className="text-xs text-muted-foreground tabular-nums">
-            {discovery?.rated ?? 0} rated · {discovery?.catalogSize ?? 0} projects
+          <p className="text-xs tabular-nums text-muted-foreground">
+            {baseIndex + activeIndex + 1} explored · {discovery?.rated ?? 0} rated
           </p>
         </div>
+        {error}
 
-        {problem && (
-          <div className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border px-4 py-3">
-            <p className="text-xs text-muted-foreground">{problem}</p>
-            <Button variant="outline" size="sm" onClick={() => void loadMore()}>
-              <RefreshCw className="mr-2 size-3.5" /> Try again
-            </Button>
+        <div className="flex flex-1 flex-col justify-center">
+          {ids.length === 0 && discovery === undefined ? (
+            <Loading label="Finding your next project…" />
+          ) : repoId === undefined ? (
+            <div className="flex min-h-[55vh] flex-col items-center justify-center gap-3 text-center">
+              {isFetching && <Spinner className="size-5" />}
+              <p className="text-sm text-muted-foreground">
+                {isFetching ? "Finding projects for you…" : "No projects ready yet."}
+              </p>
+              {!isFetching && <Button onClick={() => void loadMore(true)}>Find projects</Button>}
+            </div>
+          ) : !project ? (
+            <Loading label="Loading project…" />
+          ) : (
+            <div className="mx-auto flex min-h-[65vh] w-full max-w-3xl items-center">
+              <AnimatePresence mode="wait" initial={false}>
+                <motion.div
+                  key={repoId}
+                  initial={{ opacity: 0, y: 18 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -18 }}
+                  transition={{ duration: 0.2, ease: "easeOut" }}
+                  className="w-full"
+                >
+                  <ReelCard
+                    project={{ ...project, saved: savedOverrides.get(repoId) ?? project.saved }}
+                    active
+                    onRate={rate}
+                    onClear={clear}
+                    onToggleSaved={toggleSaved}
+                    onSkip={skip}
+                    onPrevious={previous}
+                    onNext={next}
+                    onRated={next}
+                  />
+                </motion.div>
+              </AnimatePresence>
+            </div>
+          )}
+        </div>
+
+        {repoId !== undefined && (
+          <div className="mx-auto mt-4 flex w-full max-w-3xl items-center justify-between border-t border-border pt-3">
+            <Button variant="ghost" size="sm" disabled={activeIndex === 0 && previousIds.length === 0} onClick={previous}>↑ Previous</Button>
+            <span className="text-xs text-muted-foreground">Scroll, swipe, or rate to continue</span>
+            <Button variant="ghost" size="sm" onClick={next}>Next ↓</Button>
           </div>
         )}
-
-        {discovery === undefined || (ids.length > 0 && projects === undefined) ? (
-          <Loading label="Loading projects…" />
-        ) : cards.length === 0 ? (
-          <div className="mt-8 flex flex-col items-center gap-3 rounded-xl border border-border px-6 py-12 text-center">
-            {isLoadingMore && <Spinner className="size-4 text-muted-foreground" />}
-            <p className="text-sm font-medium">{isLoadingMore ? "Finding projects…" : "No projects yet"}</p>
-            {!isLoadingMore && (
-              <Button onClick={() => void loadMore()}>Load projects</Button>
-            )}
-          </div>
-        ) : (
-          <div className="mt-6 space-y-4">
-            {cards.map((project, index) => (
-              <ProjectCard
-                key={project.repoId}
-                project={{
-                  ...project,
-                  rating: pendingRatings.has(project.repoId)
-                    ? pendingRatings.get(project.repoId) ?? null
-                    : project.rating,
-                  saved: pendingSaved.get(project.repoId) ?? project.saved,
-                }}
-                index={index}
-                onRate={handleRate}
-                onClear={handleClear}
-                onToggleSaved={handleToggleSaved}
-                onHide={handleHide}
-                onSeen={handleSeen}
-                onPassed={handlePassed}
-                onGoTo={goTo}
-                registerNode={registerNode}
-              />
-            ))}
-          </div>
+        {isFetching && repoId !== undefined && (
+          <p className="mt-2 text-center text-xs text-muted-foreground"><Spinner className="mr-2 inline size-3.5" />Finding more projects…</p>
         )}
-        <div ref={sentinel} className="h-px" />
-      </motion.main>
+      </main>
     </div>
   );
 }
