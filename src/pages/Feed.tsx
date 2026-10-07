@@ -12,6 +12,15 @@ import { Spinner } from "@/components/ui/spinner";
 import { api } from "@/convex/_generated/api";
 import { errorText } from "@/lib/format";
 
+/**
+ * The README dialog lives in a portal, but React still bubbles its wheel and
+ * touch events up this tree, so the feed has to ignore them explicitly while
+ * it is mounted. Scrolling the README must never change the project.
+ */
+function readmeOverlayOpen() {
+  return document.querySelector("[data-readme-overlay]") !== null;
+}
+
 const FETCH_COOLDOWN_MS = 8_000;
 const DISCOVERY_LIMIT = 24;
 const KEEP_PREVIOUS = 4;
@@ -130,7 +139,7 @@ export default function Feed() {
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
       // The README dialog owns the keyboard while it is open.
-      if (document.querySelector('[role="dialog"][data-state="open"]')) return;
+      if (readmeOverlayOpen()) return;
       if (event.key === "ArrowDown" || event.key === "PageDown") {
         event.preventDefault();
         next();
@@ -196,13 +205,13 @@ export default function Feed() {
           const start = touchStart.current;
           const end = event.changedTouches[0]?.clientY;
           if (start === null || end === undefined) return;
-          if (event.target instanceof Element && event.target.closest("[data-radix-dialog-content]")) return;
+          if (readmeOverlayOpen()) return;
           const delta = start - end;
           if (delta > 65) next();
           if (delta < -65) previous();
         }}
         onWheel={(event) => {
-          if (event.target instanceof Element && event.target.closest("[data-radix-dialog-content]")) return;
+          if (readmeOverlayOpen()) return;
           if (Math.abs(event.deltaY) < 40) return;
           const now = Date.now();
           if (now - lastWheel.current < 650) return;
@@ -267,16 +276,6 @@ export default function Feed() {
           )}
         </div>
 
-        {repoId !== undefined && (
-          <div className="mx-auto mt-3 flex w-full max-w-3xl items-center justify-between gap-3 border-t border-border/70 pt-3">
-            <span className="font-mono text-[10px] tracking-[0.22em] text-muted-foreground uppercase">
-              Scroll · swipe · rate to advance
-            </span>
-            <span className="hidden font-mono text-[10px] tracking-[0.22em] text-muted-foreground uppercase sm:inline">
-              ↑ ↓ to move
-            </span>
-          </div>
-        )}
         {isFetching && repoId !== undefined && (
           <p className="mt-2 text-center text-xs text-muted-foreground"><Spinner className="mr-2 inline size-3.5" />Finding more projects…</p>
         )}

@@ -312,7 +312,10 @@ export function ReelCard({
       </article>
 
       <Dialog open={readmeOpen} onOpenChange={setReadmeOpen}>
-        <DialogContent className="flex max-h-[88svh] max-w-3xl flex-col gap-0 overflow-hidden p-0">
+        <DialogContent
+          data-readme-overlay=""
+          className="flex max-h-[88svh] max-w-3xl flex-col gap-0 overflow-hidden p-0"
+        >
           <DialogHeader className="shrink-0 gap-1 border-b border-border/70 px-6 py-5 pr-12 text-left">
             <MetaLabel>README</MetaLabel>
             <DialogTitle className="truncate text-lg tracking-tight">{project.fullName}</DialogTitle>

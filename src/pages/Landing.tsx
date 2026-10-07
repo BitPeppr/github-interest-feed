@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
-import { Bookmark, GitFork, Star } from "lucide-react";
+import { Bookmark, GitFork, Loader2, Star } from "lucide-react";
 import { Link } from "react-router";
 
 import { Wordmark } from "@/components/wordmark";
@@ -198,8 +198,37 @@ function MicroLabel({ children }: { children: React.ReactNode }) {
   );
 }
 
+/**
+ * The main call to action. While the session is still resolving it renders a
+ * spinner instead of a label, and both states reserve the same width, so the
+ * page never changes its mind about whether you are signed in.
+ */
+function PrimaryCta({
+  isLoading,
+  href,
+  label,
+}: {
+  isLoading: boolean;
+  href: string;
+  label: string;
+}) {
+  if (isLoading) {
+    return (
+      <Button size="lg" disabled className="min-w-[188px]">
+        <Loader2 className="size-4 animate-spin" />
+        <span className="sr-only">Checking your session…</span>
+      </Button>
+    );
+  }
+  return (
+    <Button size="lg" className="min-w-[188px]" asChild>
+      <Link to={href}>{label}</Link>
+    </Button>
+  );
+}
+
 export default function Landing() {
-  const { isAuthenticated } = useAuth();
+  const { user, isLoading, isAuthenticated, signOut } = useAuth();
   const primaryHref = isAuthenticated ? "/feed" : FEED_PATH;
   const primaryLabel = isAuthenticated ? "Open your feed" : "Create your account";
 
@@ -227,21 +256,44 @@ export default function Landing() {
             >
               <a href="#how">How it works</a>
             </Button>
-            {!isAuthenticated && (
-              <Button
-                variant="ghost"
-                size="sm"
-                className="text-muted-foreground hover:text-foreground"
-                asChild
+            {isLoading ? (
+              <span
+                aria-hidden
+                className="flex h-8 w-[124px] items-center justify-center"
               >
-                <Link to={FEED_PATH}>Sign in</Link>
-              </Button>
+                <Loader2 className="size-4 animate-spin text-muted-foreground" />
+              </span>
+            ) : !isAuthenticated ? (
+              <>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-muted-foreground hover:text-foreground"
+                  asChild
+                >
+                  <Link to={FEED_PATH}>Sign in</Link>
+                </Button>
+                <Button size="sm" asChild>
+                  <Link to={primaryHref}>{primaryLabel}</Link>
+                </Button>
+              </>
+            ) : (
+              <>
+                {user?.isAnonymous && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-muted-foreground hover:text-foreground"
+                    onClick={() => void signOut()}
+                  >
+                    Exit guest mode
+                  </Button>
+                )}
+                <Button size="sm" asChild>
+                  <Link to={primaryHref}>{primaryLabel}</Link>
+                </Button>
+              </>
             )}
-            <Button size="sm" asChild>
-              <Link to={primaryHref}>
-                {isAuthenticated ? "Your feed" : "Create your account"}
-              </Link>
-            </Button>
           </nav>
         </div>
       </header>
@@ -266,9 +318,7 @@ export default function Landing() {
               read.
             </p>
             <div className="mt-8 flex flex-wrap items-center gap-3">
-              <Button size="lg" asChild>
-                <Link to={primaryHref}>{primaryLabel}</Link>
-              </Button>
+              <PrimaryCta isLoading={isLoading} href={primaryHref} label={primaryLabel} />
               <Button size="lg" variant="outline" asChild>
                 <a href="#how">See how it works</a>
               </Button>
@@ -414,9 +464,7 @@ export default function Landing() {
               would have chosen yourself.
             </p>
             <div className="mt-8 flex justify-center">
-              <Button size="lg" asChild>
-                <Link to={primaryHref}>{primaryLabel}</Link>
-              </Button>
+              <PrimaryCta isLoading={isLoading} href={primaryHref} label={primaryLabel} />
             </div>
           </div>
         </section>
