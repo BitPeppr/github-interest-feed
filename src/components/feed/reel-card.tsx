@@ -95,7 +95,7 @@ function HeroImage({ src, alt }: { src: string; alt: string }) {
         loading="lazy"
         decoding="async"
         onError={() => setBroken(true)}
-        className="max-h-52 w-full object-cover object-top"
+        className="h-52 w-full object-cover object-top"
       />
       <div aria-hidden className="absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-card to-transparent" />
     </div>
@@ -247,7 +247,7 @@ export function ReelCard({
             {body ? (
               <Markdown source={body} title={project.name} maxBlocks={14} hideImages={Boolean(heroImage)} />
             ) : readme === undefined || (readme !== null && !readme.readmeLoaded) ? (
-              <p className="flex items-center gap-2 py-4 text-sm text-muted-foreground">
+              <p className="flex min-h-40 items-center gap-2 py-4 text-sm text-muted-foreground">
                 <Spinner className="size-4" />
                 Pulling the README from GitHub…
               </p>
@@ -314,7 +314,7 @@ export function ReelCard({
       <Dialog open={readmeOpen} onOpenChange={setReadmeOpen}>
         <DialogContent
           data-readme-overlay=""
-          className="flex max-h-[88svh] max-w-3xl flex-col gap-0 overflow-hidden p-0"
+          className="flex max-h-[88svh] flex-col gap-0 overflow-hidden p-0 sm:max-w-5xl lg:max-w-7xl"
         >
           <DialogHeader className="shrink-0 gap-1 border-b border-border/70 px-6 py-5 pr-12 text-left">
             <MetaLabel>README</MetaLabel>

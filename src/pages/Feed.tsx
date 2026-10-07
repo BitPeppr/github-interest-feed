@@ -39,10 +39,39 @@ function atScrollBottom() {
   );
 }
 
+/** How many upcoming cards get their data warmed ahead of time. */
+const PREFETCH_AHEAD = 3;
+
 const FETCH_COOLDOWN_MS = 8_000;
 const DISCOVERY_LIMIT = 24;
 const KEEP_PREVIOUS = 4;
 const PRUNE_AFTER = 8;
+
+/**
+ * Warms the README and hero image of a card the viewer hasn't reached yet, so
+ * arriving at it shows the finished card instead of one reorganizing itself.
+ */
+function PrefetchRepo({ repoId }: { repoId: number }) {
+  const readme = useQuery(api.feed.readme, { repoId });
+  const enrich = useAction(api.github.enrich);
+  const requested = useRef(false);
+
+  useEffect(() => {
+    if (!readme || readme.readmeLoaded || requested.current) return;
+    requested.current = true;
+    void enrich({ repoIds: [repoId] }).catch(() => {});
+  }, [enrich, readme, repoId]);
+
+  const image = readme?.images?.[0];
+  useEffect(() => {
+    if (!image) return;
+    // Decode the screenshot into the browser cache before the card renders.
+    const warm = new Image();
+    warm.src = image;
+  }, [image]);
+
+  return null;
+}
 
 export default function Feed() {
   const [ids, setIds] = useState<number[]>([]);
@@ -70,9 +99,12 @@ export default function Feed() {
       : "skip",
   );
   const repoId = ids[activeIndex];
+  // Metadata for the next few cards is fetched up front too, so advancing
+  // never lands on a "Loading project…" placeholder.
+  const upcomingIds = ids.slice(activeIndex + 1, activeIndex + 1 + PREFETCH_AHEAD);
   const projects = useQuery(
     api.feed.projects,
-    repoId === undefined ? "skip" : { repoIds: [repoId] },
+    repoId === undefined ? "skip" : { repoIds: [repoId, ...upcomingIds] },
   );
   const project = projects?.items.find((item) => item.repoId === repoId);
 
@@ -261,6 +293,9 @@ export default function Feed() {
             {discovery?.rated ?? 0} rated
           </p>
         </div>
+        {upcomingIds.map((id) => (
+          <PrefetchRepo key={id} repoId={id} />
+        ))}
         {error}
 
         <div className="flex flex-1 flex-col justify-center">
