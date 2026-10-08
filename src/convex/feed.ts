@@ -256,6 +256,16 @@ const ACTIVE_STARS = " stars:>=25";
 
 const FEED_WINDOW = 24;
 const MAX_README_CHARS = 12_000;
+/** Star growth is always reported as a true seven-day rate. */
+const GROWTH_WINDOW_DAYS = 7;
+const DAY_MS = 86_400_000;
+/** Snapshot writes are chunked by callers; this caps a single mutation too. */
+const SNAPSHOT_BATCH_CAP = 100;
+/** Star history keeps enough runway for growth diffs — not forever. */
+const HISTORY_RETENTION_DAYS = 90;
+const PRUNE_BATCH = 500;
+/** How many searches the planner remembers in order to avoid re-running them. */
+const RECENT_SEARCHES = 24;
 
 /* ------------------------------------------------------------------ *
  * Shared helpers                                                      *
@@ -793,17 +803,17 @@ export const projects = query({
     // The client holds a rolling window of cards; this matches its cap.
     const unique = [...new Set(repoIds)].slice(0, 160);
     const interactions = await interactionsForUser(ctx, userId);
-
-    const items = await Promise.all(
-      unique.map(async (repoId) => {
-        const repo = await findRepo(ctx, repoId);
-        return repo
-          ? toProject(repo, interactions.get(repoId) ?? null)
-          : null;
-      }),
+    // One scan feeds every card — no per-id lookups.
+    const byId = new Map(
+      (await ctx.db.query("repos").collect()).map((repo) => [repo.repoId, repo]),
     );
 
-    return { items: items.filter((item) => item !== null) };
+    const items = unique.flatMap((repoId) => {
+      const repo = byId.get(repoId);
+      return repo ? [toProject(repo, interactions.get(repoId) ?? null)] : [];
+    });
+
+    return { items };
   },
 });
 
@@ -860,15 +870,18 @@ export const library = query({
       )
       .sort((a, b) => b.updatedAt - a.updatedAt);
 
-    const items = await Promise.all(
-      selected.map(async (row) => {
-        const repo = await findRepo(ctx, row.repoId);
-        return repo ? toProject(repo, row) : null;
-      }),
+    // One scan feeds every row — no per-id lookups.
+    const repos = new Map(
+      (await ctx.db.query("repos").collect()).map((repo) => [repo.repoId, repo]),
     );
 
+    const items = selected.flatMap((row) => {
+      const repo = repos.get(row.repoId);
+      return repo ? [toProject(repo, row)] : [];
+    });
+
     return {
-      items: items.filter((item) => item !== null),
+      items,
       total: selected.length,
     };
   },
@@ -1027,6 +1040,9 @@ export const clearRating = mutation({
     if (existing) {
       await ctx.db.patch(existing._id, {
         value: undefined,
+        // A deliberate clear ends the row's life as imported taste too:
+        // explicit actions always beat an imported profile.
+        implicit: undefined,
         updatedAt: Date.now(),
       });
     }
@@ -1093,10 +1109,18 @@ function dayString(timestamp: number): string {
   return new Date(timestamp).toISOString().slice(0, 10);
 }
 
+/** Whole days between two "YYYY-MM-DD" (UTC) day keys. */
+function dayDiff(from: string, to: string): number {
+  return Math.round((Date.parse(to) - Date.parse(from)) / DAY_MS);
+}
+
 /**
- * Record today's star counts and diff them against about a week ago, so every
- * repo carries its own growth and acceleration for ranking and "rising"
- * labels. Growth without history is simply absent — no guesses.
+ * Record today's star counts and diff them against a true seven-day window, so
+ * every repo carries its own growth and acceleration for ranking and "rising"
+ * labels. The anchor is the snapshot closest to seven days ago and the diff is
+ * normalised to a 7-day rate, so a missed day (or a late cron) cannot quietly
+ * turn "growth this week" into growth over nine days. Growth without history
+ * is simply absent — no guesses.
  */
 export const recordStarSnapshots = internalMutation({
   args: {
@@ -1105,9 +1129,11 @@ export const recordStarSnapshots = internalMutation({
   handler: async (ctx, { entries }) => {
     const now = Date.now();
     const today = dayString(now);
-    const weekAgo = dayString(now - 6 * 86_400_000);
+    const anchorDay = dayString(now - GROWTH_WINDOW_DAYS * DAY_MS);
+    let processed = 0;
 
-    for (const entry of entries.slice(0, 200)) {
+    for (const entry of entries.slice(0, SNAPSHOT_BATCH_CAP)) {
+      processed += 1;
       const existing = await ctx.db
         .query("starHistory")
         .withIndex("by_repo_day", (q) =>
@@ -1126,16 +1152,22 @@ export const recordStarSnapshots = internalMutation({
         });
       }
 
+      // The closest snapshot at or before the seven-day mark.
       const past = await ctx.db
         .query("starHistory")
         .withIndex("by_repo_day", (q) =>
-          q.eq("repoId", entry.repoId).lt("day", weekAgo),
+          q.eq("repoId", entry.repoId).lte("day", anchorDay),
         )
         .order("desc")
         .first();
       if (!past) continue;
 
-      const growth = entry.stars - past.stars;
+      const span = dayDiff(past.day, today);
+      if (span < 1) continue;
+      // Normalise to a 7-day rate however sparse the history is.
+      const growth = Math.round(
+        ((entry.stars - past.stars) * GROWTH_WINDOW_DAYS) / span,
+      );
       const earlier = await ctx.db
         .query("starHistory")
         .withIndex("by_repo_day", (q) =>
@@ -1143,7 +1175,18 @@ export const recordStarSnapshots = internalMutation({
         )
         .order("desc")
         .first();
-      const previousGrowth = earlier ? past.stars - earlier.stars : 0;
+      // Acceleration is only known when there is a previous window to diff
+      // against — otherwise it stays absent rather than guessing.
+      let accel: number | undefined;
+      if (earlier) {
+        const previousSpan = dayDiff(earlier.day, past.day);
+        if (previousSpan >= 1) {
+          const previousGrowth = Math.round(
+            ((past.stars - earlier.stars) * GROWTH_WINDOW_DAYS) / previousSpan,
+          );
+          accel = growth - previousGrowth;
+        }
+      }
 
       const repo = await ctx.db
         .query("repos")
@@ -1152,11 +1195,11 @@ export const recordStarSnapshots = internalMutation({
       if (repo) {
         await ctx.db.patch(repo._id, {
           starGrowth7d: growth,
-          starAccel: growth - previousGrowth,
+          starAccel: accel,
         });
       }
     }
-    return entries.length;
+    return processed;
   },
 });
 
@@ -1189,7 +1232,8 @@ export const applyStarImport = internalMutation({
     const now = Date.now();
     let imported = 0;
     let skipped = 0;
-    for (const repoId of [...new Set(repoIds)].slice(0, 500)) {
+    // Callers chunk; the cap keeps one mutation bounded however it is called.
+    for (const repoId of [...new Set(repoIds)].slice(0, 100)) {
       const existing = await ctx.db
         .query("ratings")
         .withIndex("by_user_repo", (q) =>
@@ -1332,28 +1376,63 @@ export const planSearches = internalMutation({
 
     const requested = Math.max(1, Math.min(count, 4));
     const start = seededOffset(userId, pool.length);
-    const specs = Array.from({ length: requested }, (_, offset) => {
+    // Recently searched topic/sort combinations go to the back of the line, so
+    // consecutive fetches keep turning the pool over instead of re-running the
+    // same searches the moment the cursor laps them.
+    const recentList = state?.recent ?? [];
+    const recentSet = new Set(recentList);
+    const candidates = Array.from({ length: requested * 4 }, (_, offset) => {
       const index = step + offset;
       // Alternate the ordering so the feed is not just the famous few.
       const sort = index % 2 === 0 ? ("stars" as const) : ("updated" as const);
+      const topic = pool[(start + index) % pool.length];
       return {
-        topic: pool[(start + index) % pool.length],
-        sort,
-        // Popularity-sorted searches rotate through star bands so smaller
-        // keyboard/TUI/art/music projects are reachable at all.
-        stars:
-          sort === "updated"
-            ? ACTIVE_STARS
-            : STAR_BANDS[Math.floor(index / 2) % STAR_BANDS.length],
-        page: Math.floor(index / pool.length) + 1,
+        key: `${topic}|${sort}`,
+        offset,
+        spec: {
+          topic,
+          sort,
+          // Popularity-sorted searches rotate through star bands so smaller
+          // keyboard/TUI/art/music projects are reachable at all.
+          stars:
+            sort === "updated"
+              ? ACTIVE_STARS
+              : STAR_BANDS[Math.floor(index / 2) % STAR_BANDS.length],
+          page: Math.floor(index / pool.length) + 1,
+        },
       };
     });
+    const fresh = candidates.filter((entry) => !recentSet.has(entry.key));
+    // If everything in reach is too recent, the most recent are still better
+    // than returning nothing.
+    const chosen = [
+      ...fresh,
+      ...candidates.filter((entry) => recentSet.has(entry.key)),
+    ].slice(0, requested);
+    const specs = chosen.map((entry) => entry.spec);
+    // The cursor also walks past candidates that were skipped for being too
+    // recent, so they are not reconsidered on the very next fetch.
+    const consumed = Math.max(...chosen.map((entry) => entry.offset)) + 1;
+    const chosenKeys = new Set(chosen.map((entry) => entry.key));
+    const recent = [
+      ...recentList.filter((key) => !chosenKeys.has(key)),
+      ...chosen.map((entry) => entry.key),
+    ].slice(-RECENT_SEARCHES);
 
     const now = Date.now();
     if (state) {
-      await ctx.db.patch(state._id, { step: step + requested, updatedAt: now });
+      await ctx.db.patch(state._id, {
+        step: step + consumed,
+        recent,
+        updatedAt: now,
+      });
     } else {
-      await ctx.db.insert("feedState", { userId, step: requested, updatedAt: now });
+      await ctx.db.insert("feedState", {
+        userId,
+        step: consumed,
+        recent,
+        updatedAt: now,
+      });
     }
 
     return { specs };
@@ -1449,5 +1528,23 @@ export const migrateReadmes = internalMutation({
       moved += 1;
     }
     return { moved };
+  },
+});
+
+/**
+ * Daily hygiene: growth diffs only need a few weeks of star history, so old
+ * rows are pruned instead of the table growing one row per repo per day
+ * forever. Idempotent, and bounded per run.
+ */
+export const pruneStarHistory = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const cutoff = dayString(Date.now() - HISTORY_RETENTION_DAYS * DAY_MS);
+    const stale = await ctx.db
+      .query("starHistory")
+      .withIndex("by_day", (q) => q.lt("day", cutoff))
+      .take(PRUNE_BATCH);
+    for (const row of stale) await ctx.db.delete(row._id);
+    return { deleted: stale.length };
   },
 });

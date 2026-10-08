@@ -4,6 +4,7 @@ import { motion } from "framer-motion";
 import { ExternalLink, Star } from "lucide-react";
 
 import { Loading } from "@/components/feed/loading";
+import { LanguageDot, TopicChips } from "@/components/feed/project-parts";
 import { Button } from "@/components/ui/button";
 import { Wordmark } from "@/components/wordmark";
 import { api } from "@/convex/_generated/api";
@@ -87,7 +88,7 @@ export default function SharedCollection() {
                       {item.description || "No description provided."}
                     </p>
                     <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
-                      {item.language && <span>{item.language}</span>}
+                      <LanguageDot language={item.language} />
                       <span className="inline-flex items-center gap-1">
                         <Star className="size-3.5" />
                         {formatCompact(item.stars)}
@@ -103,18 +104,7 @@ export default function SharedCollection() {
                         GitHub
                       </a>
                     </div>
-                    {item.topics.length > 0 && (
-                      <div className="mt-3 flex flex-wrap gap-1.5">
-                        {item.topics.slice(0, 6).map((topic) => (
-                          <span
-                            key={topic}
-                            className="rounded-full border border-border px-2 py-0.5 text-[11px] text-muted-foreground"
-                          >
-                            {topic}
-                          </span>
-                        ))}
-                      </div>
-                    )}
+                    <TopicChips topics={item.topics} count={6} className="mt-3" />
                   </li>
                 );
               })}

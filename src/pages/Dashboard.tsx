@@ -8,6 +8,7 @@ import { AppHeader } from "@/components/app-header";
 import { StarsImport } from "@/components/stars-import";
 import { Loading } from "@/components/feed/loading";
 import { InterestScale } from "@/components/feed/interest-scale";
+import { LanguageDot, TopicChips } from "@/components/feed/project-parts";
 import { Button } from "@/components/ui/button";
 import { api } from "@/convex/_generated/api";
 import { formatCompact, formatRelative } from "@/lib/format";
@@ -59,12 +60,12 @@ export default function Dashboard() {
                   <a href={project.url} target="_blank" rel="noreferrer noopener" className="text-lg font-semibold tracking-tight underline-offset-4 hover:underline">{project.fullName}</a>
                   <p className="mt-2 text-sm leading-relaxed text-foreground">{project.description || "No description provided."}</p>
                   <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
-                    {project.language && <span>{project.language}</span>}
+                    <LanguageDot language={project.language} />
                     <span className="inline-flex items-center gap-1"><Star className="size-3.5" />{formatCompact(project.stars)}</span>
                     {updated && <span>Updated {updated}</span>}
                     {project.rating && <span>Interest: {project.rating}/5</span>}
                   </div>
-                  <div className="mt-4 flex flex-wrap gap-1.5">{project.topics.slice(0, 6).map((topic) => <span key={topic} className="rounded-full border border-border px-2 py-0.5 text-[11px] text-muted-foreground">{topic}</span>)}</div>
+                  <TopicChips topics={project.topics} count={6} className="mt-4" />
                 </div>
                 <div className="flex shrink-0 items-center gap-3">
                   <InterestScale value={project.rating} onRate={(value) => void setRating({ repoId: project.repoId, value }).catch((error) => toast.error(error instanceof Error ? error.message : "Could not update rating."))} onClear={() => void clearRating({ repoId: project.repoId }).catch((error) => toast.error(error instanceof Error ? error.message : "Could not clear rating."))} />

@@ -12,6 +12,18 @@ const RESULTS_PER_SEARCH = 30;
 /** READMEs are fetched a few at a time, for the cards about to be shown. */
 const MAX_ENRICH_PER_CALL = 6;
 const README_ATTEMPTS = 3;
+/** Star imports are chunked so no single mutation runs past its limits. */
+const SAVE_CHUNK = 100;
+const SNAPSHOT_CHUNK = 50;
+/** How many repos one snapshot refresh pass chases at once. */
+const SNAPSHOT_TARGETS = 40;
+/** Concurrent fetches per snapshot batch. */
+const SNAPSHOT_CONCURRENCY = 8;
+/** A rate limit defers the rest of the work instead of dropping it. */
+const MAX_SNAPSHOT_RETRIES = 2;
+const SNAPSHOT_RETRY_MIN_MS = 60_000;
+const SNAPSHOT_RETRY_MAX_MS = 6 * 60 * 60 * 1000;
+const SNAPSHOT_RETRY_DEFAULT_MS = 15 * 60 * 1000;
 
 interface SearchSpec {
   topic: string;
@@ -313,30 +325,38 @@ export const importStars = action({
       return { imported: 0, total: 0, skipped: 0 };
     }
 
-    // Chunked so a 500-star import never pushes one mutation past its limits.
-    for (let start = 0; start < repos.length; start += 100) {
-      const chunk = repos.slice(start, start + 100);
+    // Everything is chunked and awaited before the next chunk starts, so a
+    // 500-star import never pushes one mutation past its limits and the
+    // counts below are only reported once everything has landed.
+    for (let start = 0; start < repos.length; start += SAVE_CHUNK) {
+      const chunk = repos.slice(start, start + SAVE_CHUNK);
       await ctx.runMutation(internal.feed.saveDiscoveredRepos, {
         userId,
         topicSlug: "github-stars",
         repos: chunk,
       });
-      await ctx.runMutation(internal.feed.recordStarSnapshots, {
-        entries: chunk.map((repo) => ({
-          repoId: repo.repoId,
-          stars: repo.stars,
-        })),
-      });
+      for (let s = 0; s < chunk.length; s += SNAPSHOT_CHUNK) {
+        await ctx.runMutation(internal.feed.recordStarSnapshots, {
+          entries: chunk.slice(s, s + SNAPSHOT_CHUNK).map((repo) => ({
+            repoId: repo.repoId,
+            stars: repo.stars,
+          })),
+        });
+      }
     }
-    const result = await ctx.runMutation(internal.feed.applyStarImport, {
-      userId,
-      repoIds: repos.map((repo) => repo.repoId),
-    });
-    return {
-      imported: result.imported,
-      total: repos.length,
-      skipped: result.skipped,
-    };
+    let imported = 0;
+    let skipped = 0;
+    for (let start = 0; start < repos.length; start += SAVE_CHUNK) {
+      const result = await ctx.runMutation(internal.feed.applyStarImport, {
+        userId,
+        repoIds: repos
+          .slice(start, start + SAVE_CHUNK)
+          .map((repo) => repo.repoId),
+      });
+      imported += result.imported;
+      skipped += result.skipped;
+    }
+    return { imported, total: repos.length, skipped };
   },
 });
 
@@ -345,55 +365,110 @@ export const importStars = action({
  * catalog's fastest movers and newest arrivals so growth can be diffed even
  * when nobody is browsing.
  */
-export const refreshStarSnapshots = internalAction({
-  args: {},
-  handler: async (ctx) => {
-    const targets: { repoId: number; fullName: string }[] = await ctx.runQuery(
-      internal.feed.reposToRefresh,
-      { limit: 40 },
+interface SnapshotTarget {
+  repoId: number;
+  fullName: string;
+}
+
+type SnapshotFetch =
+  | { target: SnapshotTarget; entry: { repoId: number; stars: number } }
+  | { target: SnapshotTarget; entry: null; retryAt: number | null };
+
+/** When a rate-limited response says the budget lifts, or a sane default. */
+function rateLimitResetAt(response: Response): number {
+  const retryAfter = Number(response.headers.get("retry-after"));
+  if (Number.isFinite(retryAfter) && retryAfter > 0) {
+    return Date.now() + retryAfter * 1000;
+  }
+  const reset = Number(response.headers.get("x-ratelimit-reset"));
+  if (Number.isFinite(reset) && reset > 0) return reset * 1000;
+  return Date.now() + SNAPSHOT_RETRY_DEFAULT_MS;
+}
+
+async function fetchStarCount(target: SnapshotTarget): Promise<SnapshotFetch> {
+  try {
+    const response = await fetch(
+      `https://api.github.com/repos/${target.fullName}`,
+      { headers: githubHeaders() },
     );
+    if (response.status === 403 || response.status === 429) {
+      return { target, entry: null, retryAt: rateLimitResetAt(response) };
+    }
+    if (!response.ok) return { target, entry: null, retryAt: null };
+    const payload = (await response.json()) as { stargazers_count?: number };
+    if (typeof payload.stargazers_count !== "number") {
+      return { target, entry: null, retryAt: null };
+    }
+    return {
+      target,
+      entry: { repoId: target.repoId, stars: payload.stargazers_count },
+    };
+  } catch {
+    // Best effort: tomorrow's run catches up.
+    return { target, entry: null, retryAt: null };
+  }
+}
+
+export const refreshStarSnapshots = internalAction({
+  args: {
+    attempt: v.optional(v.number()),
+    targets: v.optional(
+      v.array(v.object({ repoId: v.number(), fullName: v.string() })),
+    ),
+  },
+  handler: async (ctx, { attempt, targets: deferred }) => {
+    const targets: SnapshotTarget[] =
+      deferred ??
+      (await ctx.runQuery(internal.feed.reposToRefresh, {
+        limit: SNAPSHOT_TARGETS,
+      }));
+    const tries = attempt ?? 0;
+
     const entries: { repoId: number; stars: number }[] = [];
+    const remaining: SnapshotTarget[] = [];
     let rateLimited = false;
+    let retryAt: number | null = null;
+
     // Small concurrent batches: sequential fetches were slow for no gain.
-    for (let start = 0; start < targets.length && !rateLimited; start += 8) {
-      const batch = targets.slice(start, start + 8);
-      const results = await Promise.all(
-        batch.map(async (target) => {
-          try {
-            const response = await fetch(
-              `https://api.github.com/repos/${target.fullName}`,
-              { headers: githubHeaders() },
-            );
-            // Out of rate budget today: keep what we have, try again tomorrow.
-            if (response.status === 403 || response.status === 429) {
-              return { rateLimited: true, entry: null };
-            }
-            if (!response.ok) return { rateLimited: false, entry: null };
-            const payload = (await response.json()) as {
-              stargazers_count?: number;
-            };
-            return {
-              rateLimited: false,
-              entry:
-                typeof payload.stargazers_count === "number"
-                  ? { repoId: target.repoId, stars: payload.stargazers_count }
-                  : null,
-            };
-          } catch {
-            // Best effort: tomorrow's run catches up.
-            return { rateLimited: false, entry: null };
-          }
-        }),
-      );
+    for (let start = 0; start < targets.length; start += SNAPSHOT_CONCURRENCY) {
+      const batch = targets.slice(start, start + SNAPSHOT_CONCURRENCY);
+      const results = await Promise.all(batch.map(fetchStarCount));
       for (const result of results) {
-        if (result.rateLimited) rateLimited = true;
-        if (result.entry) entries.push(result.entry);
+        if (result.entry) {
+          entries.push(result.entry);
+          continue;
+        }
+        if (result.retryAt !== null) {
+          // Rate limited: keep what we got, defer this repo with the rest.
+          rateLimited = true;
+          retryAt = Math.max(retryAt ?? 0, result.retryAt);
+          remaining.push(result.target);
+        }
+      }
+      if (rateLimited) {
+        // Nothing later in the list can be fetched either; defer it all.
+        remaining.push(...targets.slice(start + batch.length));
+        break;
       }
     }
+
     if (entries.length > 0) {
       await ctx.runMutation(internal.feed.recordStarSnapshots, { entries });
     }
-    return { refreshed: entries.length };
+    // The pass stops at a rate limit but the work does not disappear: what was
+    // left over is retried when the budget resets, a bounded number of times.
+    if (remaining.length > 0 && tries < MAX_SNAPSHOT_RETRIES) {
+      const when = retryAt ?? Date.now() + SNAPSHOT_RETRY_DEFAULT_MS;
+      const delay = Math.min(
+        Math.max(when - Date.now(), SNAPSHOT_RETRY_MIN_MS),
+        SNAPSHOT_RETRY_MAX_MS,
+      );
+      await ctx.scheduler.runAfter(delay, internal.github.refreshStarSnapshots, {
+        attempt: tries + 1,
+        targets: remaining.slice(0, SNAPSHOT_TARGETS),
+      });
+    }
+    return { refreshed: entries.length, deferred: remaining.length };
   },
 });
 

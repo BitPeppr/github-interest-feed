@@ -1,6 +1,7 @@
 import { GitFork, Star } from "lucide-react";
 
 import { InterestScale } from "@/components/feed/interest-scale";
+import { LanguageDot, TopicChips } from "@/components/feed/project-parts";
 import type { Project } from "@/components/feed/types";
 import { formatCompact, formatRelative } from "@/lib/format";
 
@@ -41,15 +42,7 @@ export function RepoRow({ item, onRate, onClear }: RepoRowProps) {
         )}
 
         <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-muted-foreground">
-          {item.language && (
-            <span className="inline-flex items-center gap-1.5">
-              <span
-                aria-hidden
-                className="size-1.5 rounded-full bg-foreground/50"
-              />
-              {item.language}
-            </span>
-          )}
+          <LanguageDot language={item.language} />
           <span className="inline-flex items-center gap-1 tabular-nums">
             <Star className="size-3.5" aria-hidden />
             {formatCompact(item.stars)}
@@ -66,18 +59,7 @@ export function RepoRow({ item, onRate, onClear }: RepoRowProps) {
           )}
         </div>
 
-        {item.topics.length > 0 && (
-          <div className="mt-3 flex flex-wrap gap-1.5">
-            {item.topics.slice(0, 3).map((topic) => (
-              <span
-                key={topic}
-                className="rounded-full border border-border px-2 py-0.5 text-[11px] text-muted-foreground"
-              >
-                {topic}
-              </span>
-            ))}
-          </div>
-        )}
+        <TopicChips topics={item.topics} count={3} className="mt-3" />
       </div>
 
       <div className="shrink-0 sm:pt-0.5">

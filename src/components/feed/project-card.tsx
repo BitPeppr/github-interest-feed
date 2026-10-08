@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 
 import { InterestScale } from "@/components/feed/interest-scale";
+import { TopicChips } from "@/components/feed/project-parts";
 import type { Project } from "@/components/feed/types";
 import { Button } from "@/components/ui/button";
 import { formatCompact, formatRelative } from "@/lib/format";
@@ -75,7 +76,6 @@ function ProjectCardBase({
   }, [onPassed, onSeen, project.repoId]);
 
   const updated = formatRelative(project.pushedAt);
-  const topics = project.topics.slice(0, 4);
 
   return (
     <article
@@ -136,15 +136,8 @@ function ProjectCardBase({
           </span>
           {project.license && <span>{project.license}</span>}
           {project.archived && <span>Archived</span>}
-          {topics.map((topic) => (
-            <span
-              key={topic}
-              className="rounded-full border border-border px-2 py-0.5 text-[11px]"
-            >
-              {topic}
-            </span>
-          ))}
         </div>
+        <TopicChips topics={project.topics} count={4} className="mt-3" />
       </div>
 
       <footer className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-border px-5 py-3 sm:px-6">

@@ -128,6 +128,8 @@ const schema = defineSchema(
     feedState: defineTable({
       userId: v.id("users"),
       step: v.number(),
+      // Recently planned "topic|sort" keys the planner avoids re-running.
+      recent: v.optional(v.array(v.string())),
       updatedAt: v.number(),
     }).index("by_user", ["userId"]),
   },

@@ -13,4 +13,13 @@ crons.interval(
   {},
 );
 
+// Star history only needs a few weeks of runway for growth diffs; prune the
+// rest so the table does not keep one row per repo per day forever.
+crons.daily(
+  "prune star history",
+  { hourUTC: 3, minuteUTC: 30 },
+  internal.feed.pruneStarHistory,
+  {},
+);
+
 export default crons;

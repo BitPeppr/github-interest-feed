@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Spinner } from "@/components/ui/spinner";
 import { InterestScale } from "@/components/feed/interest-scale";
+import { LanguageDot, TopicChips } from "@/components/feed/project-parts";
 import type { Project } from "@/components/feed/types";
 import { api } from "@/convex/_generated/api";
 import { Markdown } from "@/lib/markdown";
@@ -17,70 +18,15 @@ interface ReelCardProps {
   project: Project;
   active: boolean;
   index: number;
-  onRate: (repoId: number, value: number) => void;
-  onClear: (repoId: number) => void;
+  /** Resolves false when the mutation failed — the card rolls back then. */
+  onRate: (repoId: number, value: number) => boolean | Promise<boolean>;
+  onClear: (repoId: number) => boolean | Promise<boolean>;
+  /** Saving is optimistic in the parent; a failure reverts `project.saved`. */
   onToggleSaved: (repoId: number, saved: boolean) => void;
   onSkip: (repoId: number) => void;
   onPrevious: () => void;
   onNext: () => void;
   onRated: () => void;
-}
-
-/** GitHub's language colours, used as the only spot of colour on the card. */
-const LANGUAGE_COLORS: Record<string, string> = {
-  TypeScript: "#3178c6",
-  JavaScript: "#f1e05a",
-  Python: "#3572a5",
-  Go: "#00add8",
-  Rust: "#dea584",
-  Java: "#b07219",
-  "C++": "#f34b7d",
-  C: "#555555",
-  "C#": "#178600",
-  Shell: "#89e051",
-  Ruby: "#701516",
-  PHP: "#4f5d95",
-  Swift: "#f05138",
-  Kotlin: "#a97bff",
-  Dart: "#00b4ab",
-  Zig: "#ec915c",
-  Lua: "#000080",
-  Elixir: "#6e4a7e",
-  Haskell: "#5e5086",
-  HTML: "#e34c26",
-  CSS: "#563d7c",
-  SCSS: "#c6538c",
-  Vue: "#41b883",
-  Svelte: "#ff3e00",
-  Astro: "#ff5a03",
-  "Jupyter Notebook": "#da5b0b",
-  Clojure: "#db5855",
-  OCaml: "#ef7a08",
-  Nim: "#ffc200",
-  R: "#198ce7",
-  Julia: "#a270ba",
-  PowerShell: "#012456",
-  Dockerfile: "#384d54",
-  Makefile: "#427819",
-  Nix: "#7e7eff",
-  Solidity: "#aa6746",
-  TeX: "#3d6117",
-  MDX: "#fcb32c",
-};
-
-function LanguageDot({ language }: { language: string | null }) {
-  if (!language) return null;
-  const color = LANGUAGE_COLORS[language] ?? "var(--muted-foreground)";
-  return (
-    <span className="inline-flex items-center gap-1.5">
-      <span
-        aria-hidden
-        className="size-2.5 rounded-full ring-1 ring-current/10"
-        style={{ backgroundColor: color }}
-      />
-      {language}
-    </span>
-  );
 }
 
 /** First screenshot pulled out of the README, if the repo has one. */
@@ -124,7 +70,6 @@ export function ReelCard({
 }: ReelCardProps) {
   const [readmeOpen, setReadmeOpen] = useState(false);
   const [rating, setRating] = useState(project.rating);
-  const [saved, setSaved] = useState(project.saved);
   const [identity, setIdentity] = useState(project.repoId);
   const requested = useRef(new Set<number>());
 
@@ -136,7 +81,6 @@ export function ReelCard({
   if (identity !== project.repoId) {
     setIdentity(project.repoId);
     setRating(project.rating);
-    setSaved(project.saved);
   }
 
   useEffect(() => {
@@ -221,18 +165,7 @@ export function ReelCard({
             {updated && <span>updated {updated}</span>}
             {project.archived && <span className="text-foreground">Archived</span>}
           </div>
-          {project.topics.length > 0 && (
-            <div className="mt-4 flex flex-wrap gap-2">
-              {project.topics.slice(0, 6).map((topic) => (
-                <span
-                  key={topic}
-                  className="rounded-full border border-border bg-muted px-2.5 py-1 font-mono text-[11px] tracking-wide text-muted-foreground transition-colors hover:border-foreground/30 hover:text-foreground"
-                >
-                  {topic}
-                </span>
-              ))}
-            </div>
-          )}
+          <TopicChips topics={project.topics} count={6} className="mt-4" />
         </div>
 
         <section className="mt-6 border-t border-border/70">
@@ -279,29 +212,33 @@ export function ReelCard({
               autoAdvance
               onRated={onRated}
               onRate={(value) => {
+                // Optimistic, but honest: a failed mutation restores the
+                // rating that is actually stored.
+                const previous = rating;
                 setRating(value);
-                onRate(project.repoId, value);
+                void Promise.resolve(onRate(project.repoId, value)).then((ok) => {
+                  if (ok === false) setRating(previous);
+                });
               }}
               onClear={() => {
+                const previous = rating;
                 setRating(null);
-                onClear(project.repoId);
+                void Promise.resolve(onClear(project.repoId)).then((ok) => {
+                  if (ok === false) setRating(previous);
+                });
               }}
             />
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <Button
-              variant={saved ? "default" : "outline"}
+              variant={project.saved ? "default" : "outline"}
               size="sm"
               className="gap-1.5"
-              aria-pressed={saved}
-              onClick={() => {
-                const next = !saved;
-                setSaved(next);
-                onToggleSaved(project.repoId, next);
-              }}
+              aria-pressed={project.saved}
+              onClick={() => onToggleSaved(project.repoId, !project.saved)}
             >
-              <Bookmark className={cn("size-3.5", saved && "fill-current")} />
-              {saved ? "Saved" : "Save"}
+              <Bookmark className={cn("size-3.5", project.saved && "fill-current")} />
+              {project.saved ? "Saved" : "Save"}
             </Button>
             <Button variant="ghost" size="sm" className="gap-1.5" onClick={() => onSkip(project.repoId)}>
               <EyeOff className="size-3.5" />

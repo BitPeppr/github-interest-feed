@@ -49,6 +49,13 @@ const WARM_CONCURRENCY = 3;
 /** Give a failed warm batch a couple of retries before giving up on it. */
 const WARM_RETRIES = 2;
 const WARM_RETRY_DELAY_MS = 4_000;
+/**
+ * A warm entry lives as long as a card might still arrive at it. After that it
+ * expires: the queue serves the cards in front of the viewer, not repos they
+ * have already scrolled past, and a README that keeps failing falls out on
+ * its own instead of retrying forever.
+ */
+const WARM_TTL_MS = 60_000;
 
 const FETCH_COOLDOWN_MS = 8_000;
 const DISCOVERY_LIMIT = 24;
@@ -91,7 +98,7 @@ export default function Feed() {
   const queued = useRef(new Set<number>());
   const touchStart = useRef<number | null>(null);
   const lastWheel = useRef(0);
-  const warmQueue = useRef<number[]>([]);
+  const warmQueue = useRef<{ id: number; expiresAt: number }[]>([]);
   const warmBatchesInFlight = useRef(0);
   const warmAttempts = useRef(new Map<number, number>());
 
@@ -126,9 +133,14 @@ export default function Feed() {
   /**
    * Drains the warm queue: background README enrichment for whole discovery
    * batches, running the moment projects enter the feed — never waiting for
-   * the viewer to scroll near them. Failed batches are retried a few times.
+   * the viewer to scroll near them. Failed batches retry a bounded number of
+   * times and only while their entries are still fresh.
    */
   const drainWarmQueue = useCallback(function drain() {
+    // Expired entries are dropped first: the queue only serves cards that are
+    // still in front of the viewer.
+    const now = Date.now();
+    warmQueue.current = warmQueue.current.filter((entry) => entry.expiresAt > now);
     while (
       warmBatchesInFlight.current < WARM_CONCURRENCY &&
       warmQueue.current.length > 0
@@ -137,16 +149,21 @@ export default function Feed() {
       warmBatchesInFlight.current += 1;
       void (async () => {
         try {
-          await enrich({ repoIds: batch });
+          await enrich({ repoIds: batch.map((entry) => entry.id) });
         } catch {
-          for (const id of batch) {
-            const attempts = (warmAttempts.current.get(id) ?? 0) + 1;
-            if (attempts <= WARM_RETRIES) {
-              warmAttempts.current.set(id, attempts);
-              warmQueue.current.push(id);
-            }
+          const retry = batch.filter((entry) => {
+            const attempts = (warmAttempts.current.get(entry.id) ?? 0) + 1;
+            warmAttempts.current.set(entry.id, attempts);
+            return attempts <= WARM_RETRIES && entry.expiresAt > Date.now();
+          });
+          // Schedule the retry without holding a concurrency slot while it
+          // waits, so the backlog keeps draining during the delay.
+          if (retry.length > 0) {
+            window.setTimeout(() => {
+              warmQueue.current.push(...retry);
+              drain();
+            }, WARM_RETRY_DELAY_MS);
           }
-          await new Promise((resolve) => setTimeout(resolve, WARM_RETRY_DELAY_MS));
         } finally {
           warmBatchesInFlight.current -= 1;
           if (warmQueue.current.length > 0) drain();
@@ -164,7 +181,8 @@ export default function Feed() {
     additions.forEach((id) => queued.current.add(id));
     // Warm the whole batch in the background right now, so cards are ready
     // long before the viewer reaches them.
-    warmQueue.current.push(...additions);
+    const expiresAt = Date.now() + WARM_TTL_MS;
+    warmQueue.current.push(...additions.map((id) => ({ id, expiresAt })));
     drainWarmQueue();
     // Append synchronously: a deferred append could be cancelled by a dep
     // change after `queued` was marked, losing these ids for good.
@@ -257,11 +275,22 @@ export default function Feed() {
     return () => window.removeEventListener("keydown", onKey);
   }, [next, previous]);
 
-  const rate = useCallback((id: number, value: number) => {
-    void setRating({ repoId: id, value }).catch((error) => toast.error(errorText(error)));
+  /** Optimistic cards roll back when these resolve false. */
+  const rate = useCallback((id: number, value: number): Promise<boolean> => {
+    return setRating({ repoId: id, value })
+      .then(() => true)
+      .catch((error) => {
+        toast.error(errorText(error));
+        return false;
+      });
   }, [setRating]);
-  const clear = useCallback((id: number) => {
-    void clearRating({ repoId: id }).catch((error) => toast.error(errorText(error)));
+  const clear = useCallback((id: number): Promise<boolean> => {
+    return clearRating({ repoId: id })
+      .then(() => true)
+      .catch((error) => {
+        toast.error(errorText(error));
+        return false;
+      });
   }, [clearRating]);
   const toggleSaved = useCallback((id: number, saved: boolean) => {
     setSavedOverrides((current) => new Map(current).set(id, saved));
