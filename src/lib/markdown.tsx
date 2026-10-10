@@ -128,7 +128,10 @@ function renderBlock(block: Block, index: number): React.ReactNode {
       );
     case "list":
       return block.ordered ? (
-        <ol key={index} className="mt-3 list-decimal space-y-1.5 pl-5 first:mt-0">
+        <ol
+          key={index}
+          className="mt-3 list-decimal space-y-1.5 pl-5 first:mt-0"
+        >
           {block.items.map((item, itemIndex) => (
             <li key={itemIndex}>
               {renderInline(item, `${prefix}-${itemIndex}`)}
@@ -161,7 +164,10 @@ function renderBlock(block: Block, index: number): React.ReactNode {
           <table className="w-full border-collapse text-xs">
             <tbody>
               {block.rows.map((cells, rowIndex) => (
-                <tr key={rowIndex} className="border-b border-border last:border-0">
+                <tr
+                  key={rowIndex}
+                  className="border-b border-border last:border-0"
+                >
                   {cells.map((cell, cellIndex) => (
                     <td
                       key={cellIndex}

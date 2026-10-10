@@ -1,0 +1,321 @@
+/**
+ * Candidate assembly: filter → tag provenance → score → pool → explore on an
+ * independent path → rank → interleave → window.
+ *
+ * Dedupe happens once, after all generators contribute, and provenance is
+ * unioned so diagnostics can see every path that surfaced a repository.
+ */
+import {
+  CANDIDATE_POOL,
+  EXPLORE_COOL_FLOOR,
+  EXPLORE_COOL_IMPRESSIONS,
+  EXPLORE_SLOTS,
+  FEED_WINDOW,
+  FRESH_WINDOW_DAYS,
+  LONG_TAIL_STAR_THRESHOLD,
+  type RankingWeights,
+  DEFAULT_WEIGHTS,
+} from "./constants";
+import { selectExploration } from "./exploration";
+import { interleave, selectWindow } from "./rerank";
+import { facetsOf, scoreProject } from "./scoring";
+import type {
+  CandidateSource,
+  RepoSnapshot,
+  ScoredCandidate,
+  Signals,
+} from "./types";
+
+export interface AssembleOptions {
+  weights?: RankingWeights;
+  poolSize?: number;
+  exploreSlots?: number;
+  windowSize?: number;
+  limit?: number;
+  /** Topics the user explicitly follows — measured as their own feature. */
+  followedTopics?: Set<string>;
+}
+
+export interface AssembledFeed {
+  window: ScoredCandidate[];
+  /** Unseen candidates that lost the window (for `remaining` counts). */
+  unseenCount: number;
+}
+
+/** Tag cheap provenance available without semantic retrieval. */
+export function tagSources(
+  repo: RepoSnapshot,
+  signals: Signals,
+  followedTopics?: Set<string>,
+): CandidateSource[] {
+  const sources: CandidateSource[] = ["ranked"];
+  if (
+    repo.pushedAt !== undefined &&
+    signals.now - repo.pushedAt <= FRESH_WINDOW_DAYS * 86_400_000
+  ) {
+    sources.push("fresh");
+  }
+  let affinity = false;
+  for (const topic of repo.topics) {
+    if ((signals.topicAffinity.get(topic) ?? 0) > 0) {
+      affinity = true;
+      break;
+    }
+  }
+  if (
+    !affinity &&
+    repo.language &&
+    (signals.languageAffinity.get(repo.language) ?? 0) > 0
+  ) {
+    affinity = true;
+  }
+  if (!affinity && (signals.ownerAffinity.get(repo.owner) ?? 0) > 0) {
+    affinity = true;
+  }
+  if (
+    !affinity &&
+    followedTopics !== undefined &&
+    repo.topics.some((topic) => followedTopics.has(topic))
+  ) {
+    affinity = true;
+  }
+  if (affinity) sources.push("topic");
+  if (repo.stars < LONG_TAIL_STAR_THRESHOLD) sources.push("long-tail");
+  return sources;
+}
+
+/** Merge duplicate candidates, unioning provenance. */
+export function dedupe(entries: ScoredCandidate[]): ScoredCandidate[] {
+  const byId = new Map<number, ScoredCandidate>();
+  for (const entry of entries) {
+    const existing = byId.get(entry.repo.repoId);
+    if (!existing) {
+      byId.set(entry.repo.repoId, entry);
+      continue;
+    }
+    const sources = [...existing.sources];
+    for (const source of entry.sources) {
+      if (!sources.includes(source)) sources.push(source);
+    }
+    // Keep the higher-scored representative; provenance is what merges.
+    byId.set(
+      entry.repo.repoId,
+      entry.score > existing.score
+        ? { ...entry, sources }
+        : { ...existing, sources },
+    );
+  }
+  return [...byId.values()];
+}
+
+export function assembleFeed(
+  catalog: RepoSnapshot[],
+  signals: Signals,
+  touched: Set<number>,
+  excluded: Set<number>,
+  options: AssembleOptions = {},
+): AssembledFeed {
+  const weights: RankingWeights = options.weights ?? DEFAULT_WEIGHTS;
+  const followedTopics = options.followedTopics;
+  const semanticExtras =
+    followedTopics === undefined ? undefined : { followedTopics };
+  const poolSize = options.poolSize ?? CANDIDATE_POOL;
+  // `windowSize` is the explicit knob and `limit` the caller-facing alias.
+  // Previously only `limit` was read, so passing `windowSize` silently fell
+  // back to FEED_WINDOW.
+  const windowSize = Math.max(
+    1,
+    Math.min(options.windowSize ?? options.limit ?? FEED_WINDOW, FEED_WINDOW),
+  );
+
+  const unseen = catalog.filter(
+    (repo) =>
+      !repo.archived && !touched.has(repo.repoId) && !excluded.has(repo.repoId),
+  );
+
+  const scored: ScoredCandidate[] = unseen.map((repo) => {
+    const { score, features, parts } = scoreProject(
+      repo,
+      signals,
+      weights,
+      semanticExtras,
+    );
+    return {
+      repo,
+      score,
+      explore: 0,
+      facets: facetsOf(repo),
+      sources: tagSources(repo, signals, followedTopics),
+      features,
+      parts,
+    };
+  });
+
+  // Exploitation pool: the best-scoring candidates. Ties break by ascending
+  // repoId — deterministic, and repository identity no longer perturbs scores.
+  const pool = scored
+    .sort((a, b) => b.score - a.score || a.repo.repoId - b.repo.repoId)
+    .slice(0, poolSize);
+
+  // Exploration runs on the FULL unseen set, not the scored pool, so unusual
+  // repositories are reachable even with low predicted interest.
+  //
+  // The reserved slice cools as impressions accumulate: early on the feed is
+  // mostly discovery, later it leans on what it has learned. An explicit
+  // `exploreSlots` is a caller's decision and is honoured as given; cooling
+  // only governs the default.
+  const exploreCool = Math.max(
+    EXPLORE_COOL_FLOOR,
+    1 - signals.totalImpressions / EXPLORE_COOL_IMPRESSIONS,
+  );
+  const exploreSlots =
+    options.exploreSlots ??
+    Math.min(
+      EXPLORE_SLOTS,
+      Math.max(1, Math.floor((windowSize / 3) * exploreCool)),
+    );
+  const scoredById = new Map(scored.map((entry) => [entry.repo.repoId, entry]));
+  const explorers = selectExploration(unseen, signals, exploreSlots);
+  const exploreIds = new Set(explorers.map((entry) => entry.repo.repoId));
+  const ranked = selectWindow(
+    pool
+      .filter((entry) => !exploreIds.has(entry.repo.repoId))
+      .map((entry) => ({
+        item: entry,
+        score: entry.score,
+        facets: entry.facets,
+        owner: entry.repo.owner,
+        language: entry.repo.language,
+      })),
+    windowSize - explorers.length,
+  );
+  // selectExploration already diversified these; keep its order.
+  const explorerItems = explorers.map((pick) => {
+    const match = scoredById.get(pick.repo.repoId);
+    const base = match ?? {
+      repo: pick.repo,
+      score: Number.NEGATIVE_INFINITY,
+      explore: pick.explore,
+      facets: pick.facets,
+      sources: [] as CandidateSource[],
+      features: scoreProject(pick.repo, signals, weights, semanticExtras)
+        .features,
+      parts: [],
+    };
+    const sources = [...base.sources];
+    if (!sources.includes("exploration")) sources.push("exploration");
+    return { ...base, explore: pick.explore, sources };
+  });
+  const window = interleave<ScoredCandidate>(explorerItems, ranked, windowSize);
+
+  return { window, unseenCount: unseen.length };
+}
+
+/* ------------------------------------------------------------------ *
+ * Shared generator pieces (also used by the queue planner, PR4)       *
+ * ------------------------------------------------------------------ */
+
+/** A repository with the provenance of the generators that surfaced it. */
+export interface SourcedRepo {
+  repo: RepoSnapshot;
+  sources: CandidateSource[];
+}
+
+/** Drop archived, already-touched and explicitly excluded repositories. */
+export function filterUnseen(
+  catalog: RepoSnapshot[],
+  touched: Set<number>,
+  excluded: Set<number>,
+): RepoSnapshot[] {
+  return catalog.filter(
+    (repo) =>
+      !repo.archived && !touched.has(repo.repoId) && !excluded.has(repo.repoId),
+  );
+}
+
+function withSource(
+  repos: RepoSnapshot[],
+  source: CandidateSource,
+  cap: number,
+): SourcedRepo[] {
+  return repos
+    .sort((a, b) => b.stars - a.stars || a.repoId - b.repoId)
+    .slice(0, Math.max(0, cap))
+    .map((repo) => ({ repo, sources: [source] }));
+}
+
+/** Repositories matching learned affinity or explicitly followed topics. */
+export function topicMatchedRepos(
+  unseen: RepoSnapshot[],
+  signals: Signals,
+  followedTopics: Set<string> | undefined,
+  cap: number,
+): SourcedRepo[] {
+  const matched = unseen.filter((repo) => {
+    if (
+      repo.topics.some((topic) => (signals.topicAffinity.get(topic) ?? 0) > 0)
+    ) {
+      return true;
+    }
+    if (
+      repo.language &&
+      (signals.languageAffinity.get(repo.language) ?? 0) > 0
+    ) {
+      return true;
+    }
+    if ((signals.ownerAffinity.get(repo.owner) ?? 0) > 0) return true;
+    return (
+      followedTopics !== undefined &&
+      repo.topics.some((topic) => followedTopics.has(topic))
+    );
+  });
+  return withSource(matched, "topic", cap);
+}
+
+/** Recently pushed repositories (activity, not just novelty for its own sake). */
+export function freshRepos(
+  unseen: RepoSnapshot[],
+  now: number,
+  cap: number,
+  windowDays = FRESH_WINDOW_DAYS,
+): SourcedRepo[] {
+  const cutoff = now - windowDays * 86_400_000;
+  const fresh = unseen.filter(
+    (repo) => repo.pushedAt !== undefined && repo.pushedAt >= cutoff,
+  );
+  return withSource(fresh, "fresh", cap);
+}
+
+/** Smaller projects above the noise floor — the long tail must stay reachable. */
+export function longTailRepos(
+  unseen: RepoSnapshot[],
+  cap: number,
+  threshold = LONG_TAIL_STAR_THRESHOLD,
+): SourcedRepo[] {
+  return withSource(
+    unseen.filter((repo) => repo.stars < threshold),
+    "long-tail",
+    cap,
+  );
+}
+
+/** Merge sourced lists, unioning provenance for duplicates. */
+export function dedupeSourced(lists: SourcedRepo[][]): SourcedRepo[] {
+  const byId = new Map<number, SourcedRepo>();
+  for (const list of lists) {
+    for (const entry of list) {
+      const existing = byId.get(entry.repo.repoId);
+      if (!existing) {
+        byId.set(entry.repo.repoId, {
+          repo: entry.repo,
+          sources: [...entry.sources],
+        });
+        continue;
+      }
+      for (const source of entry.sources) {
+        if (!existing.sources.includes(source)) existing.sources.push(source);
+      }
+    }
+  }
+  return [...byId.values()];
+}

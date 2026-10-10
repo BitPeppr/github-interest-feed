@@ -26,7 +26,13 @@ interface InterestScaleProps {
  * Five dots, filled up to the chosen level. Hovering previews a level without
  * committing it, so the control stays quiet until the user decides.
  */
-export function InterestScale({ value, onRate, onClear, onRated, autoAdvance = false }: InterestScaleProps) {
+export function InterestScale({
+  value,
+  onRate,
+  onClear,
+  onRated,
+  autoAdvance = false,
+}: InterestScaleProps) {
   const [preview, setPreview] = useState<number | null>(null);
   const shown = preview ?? value ?? 0;
   const label = value ? INTEREST_LABELS[value - 1] : "Rate";
@@ -64,7 +70,7 @@ export function InterestScale({ value, onRate, onClear, onRated, autoAdvance = f
             <span
               aria-hidden
               className={cn(
-                "size-2.5 rounded-full transition-colors", 
+                "size-2.5 rounded-full transition-colors",
                 level <= shown ? "bg-foreground" : "bg-transparent",
               )}
             />

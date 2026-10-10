@@ -16,8 +16,7 @@ const PREVIEW_CARDS = [
   {
     owner: "kata0510",
     name: "Lily58",
-    description:
-      "6	imes4+4 keys column-staggered split keyboard.",
+    description: "6	imes4+4 keys column-staggered split keyboard.",
     language: "Unknown",
     stars: "2.3k",
     forks: "1.2k",
@@ -292,7 +291,11 @@ export default function Landing() {
                     strokeLinecap="round"
                     initial={{ pathLength: 0, opacity: 0 }}
                     animate={{ pathLength: 1, opacity: 1 }}
-                    transition={{ duration: 0.9, delay: 0.55, ease: "easeInOut" }}
+                    transition={{
+                      duration: 0.9,
+                      delay: 0.55,
+                      ease: "easeInOut",
+                    }}
                   />
                 </svg>
               </span>
@@ -348,8 +351,8 @@ export default function Landing() {
               ))}
             </div>
             <p className="mt-6 text-center text-[11px] text-muted-foreground">
-              These are real projects from GitHub, not placeholders.
-              The real feed loads them as you go.
+              These are real projects from GitHub, not placeholders. The real
+              feed loads them as you go.
             </p>
           </motion.div>
         </section>
