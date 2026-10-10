@@ -60,10 +60,7 @@ function ProjectCardBase({
             hasBeenSeen.current = true;
             onSeen(project.repoId);
           }
-          if (
-            hasBeenSeen.current &&
-            entry.boundingClientRect.bottom < 0
-          ) {
+          if (hasBeenSeen.current && entry.boundingClientRect.bottom < 0) {
             onPassed(project.repoId);
             observer.disconnect();
           }

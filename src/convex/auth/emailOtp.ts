@@ -55,7 +55,9 @@ function freebuffEmailOtpError(error: unknown): Error {
   )?.response;
   if (response) {
     const detail =
-      typeof response.data?.error === "string" ? `: ${response.data.error}` : "";
+      typeof response.data?.error === "string"
+        ? `: ${response.data.error}`
+        : "";
     return new Error(
       `Could not send the sign-in code (HTTP ${response.status})${detail}`,
     );
