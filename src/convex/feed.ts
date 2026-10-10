@@ -10,7 +10,6 @@ import {
   type QueryCtx,
 } from "./_generated/server";
 
-
 /**
  * Shape of a repository as scraped from the GitHub search API. Shared between
  * the `github` action (which fetches) and `saveDiscoveredRepos` (which stores),
@@ -254,7 +253,6 @@ const STAR_BANDS = [
 /** Freshness-sorted searches stay above the noise floor of abandoned repos. */
 const ACTIVE_STARS = " stars:>=25";
 
-const FEED_WINDOW = 24;
 const MAX_README_CHARS = 12_000;
 /** Star growth is always reported as a true seven-day rate. */
 const GROWTH_WINDOW_DAYS = 7;
@@ -272,7 +270,11 @@ const RECENT_SEARCHES = 24;
  * ------------------------------------------------------------------ */
 
 /** The shape every project card is rendered from. */
-export function toProject(repo: Doc<"repos">, interaction: Doc<"ratings"> | null) {
+export function toProject(
+  repo: Doc<"repos">,
+  interaction: Doc<"ratings"> | null,
+  reasons: string[] = [],
+) {
   return {
     repoId: repo.repoId,
     fullName: repo.fullName,
@@ -299,6 +301,9 @@ export function toProject(repo: Doc<"repos">, interaction: Doc<"ratings"> | null
     rating: interaction?.value ?? null,
     saved: interaction?.saved === true,
     hidden: interaction?.hidden === true,
+    // "Why am I seeing this" — populated for recommendations, empty for the
+    // library (saved/hidden lists are not recommendations).
+    reasons,
   };
 }
 
@@ -323,20 +328,59 @@ export async function findRepo(
     .unique();
 }
 
+/** Topics the user explicitly follows (bounded: users follow a handful). */
+async function followedTopicsFor(
+  ctx: QueryCtx,
+  userId: Id<"users">,
+): Promise<Set<string>> {
+  const topics = await ctx.db
+    .query("topics")
+    .withIndex("by_user", (q) => q.eq("userId", userId))
+    .collect();
+  return new Set(topics.map((topic) => topic.slug));
+}
+
+/**
+ * Full user signals for ranking/explanations. Reads the user's own rating
+ * rows (bounded per user) plus one indexed repo lookup per rated repo.
+ * NOTE (perf): PR4 serves the feed from a persisted queue and stops
+ * rebuilding this on the hot path; the queue generator keeps this cost in
+ * the background.
+ */
+async function signalsForUser(
+  ctx: QueryCtx,
+  userId: Id<"users">,
+  now: number,
+): Promise<ReturnType<typeof buildSignals>> {
+  const rows = await ctx.db
+    .query("ratings")
+    .withIndex("by_user", (q) => q.eq("userId", userId))
+    .collect();
+  const rated = [];
+  for (const row of rows) {
+    const repo = await ctx.db
+      .query("repos")
+      .withIndex("by_repo_id", (q) => q.eq("repoId", row.repoId))
+      .unique();
+    if (!repo) continue;
+    rated.push({
+      repo: toSnapshot(repo),
+      value: row.value,
+      saved: row.saved,
+      hidden: row.hidden,
+      githubOpens: row.githubOpens,
+      readmeOpens: row.readmeOpens,
+      dwellMs: row.dwellMs,
+    });
+  }
+  return buildSignals(now, rated);
+}
+
 function countBy(values: Iterable<string>, counts: Map<string, number>): void {
   for (const value of values) {
     if (!value) continue;
     counts.set(value, (counts.get(value) ?? 0) + 1);
   }
-}
-
-/** Keeps the strongest dislike for a facet; repeated skips do not stack. */
-function lower(
-  map: Map<string, number>,
-  names: Iterable<string>,
-  amount: number,
-): void {
-  for (const name of names) map.set(name, Math.min(map.get(name) ?? 0, amount));
 }
 
 function facets(
@@ -364,266 +408,45 @@ function seededOffset(seed: string, length: number): number {
 }
 
 /**
- * How much a rated-highly project should push the feed toward its topics.
- * Capped: rating twenty projects that share a topic used to add twenty points
- * to it, which buried every other topic in the feed.
+ * Ranking lives in `recommender/`: `signals.ts` builds user signals,
+ * `scoring.ts` extracts features and scores, `candidates.ts` assembles the
+ * window with exploration on an independent path, `rerank.ts` diversifies.
+ * This module keeps Convex access (queries, mutations) and thin adapters.
  */
-function affinityWeight(count: number): number {
-  return Math.min(count, 3);
-}
+import { assembleFeed, tagSources } from "./recommender/candidates";
+import type { RepoSnapshot } from "./recommender/types";
+import { buildSignals } from "./recommender/signals";
+import { explainCandidate } from "./recommender/explain";
+import { scoreProject } from "./recommender/scoring";
+import {
+  applyImpressions,
+  applyTransition,
+  emptyProfile,
+  fromStorable,
+  toStorable,
+  type ProfileSnapshot,
+  type RowState,
+} from "./recommender/profile";
 
-/**
- * Ranking weights for the candidate window. Popularity is a tiebreaker here,
- * not the signal: at 0.5·log10(stars) a 100k-star repository outranked every
- * smaller one, so whole domains — keyboards, TUIs, simulations, art, music —
- * could never reach the window even once they were in the catalog.
- */
-const STARS_WEIGHT = 0.22;
-const STARS_CAP = 0.9;
-/**
- * Star velocity: growth and acceleration outrank raw size, so "before it was
- * big" beats "already famous" — the whole point of a discovery feed.
- */
-const VELOCITY_WEIGHT = 0.55;
-const VELOCITY_CAP = 1.7;
-const ACCEL_WEIGHT = 0.3;
-const ACCEL_CAP = 0.6;
-const JITTER_WEIGHT = 0.9;
-/** Freshness decays like a Reddit/HN score instead of a flat recent bonus. */
-const FRESH_HALF_LIFE_DAYS = 45;
-const FRESH_WEIGHT = 1;
-const AFFINITY_TOPIC = 0.4;
-const AFFINITY_LANGUAGE = 0.6;
-const AFFINITY_OWNER = 0.6;
-/**
- * A skip or a 1-2 rating is a far stronger statement than a 4-5, the way X
- * weights negative actions above positive ones.
- */
-const DISLIKE_TOPIC = -0.8;
-const DISLIKE_LANGUAGE = -1;
-const DISLIKE_OWNER = -1.6;
-/** Optimism under uncertainty: the bandit rule for under-exposed facets. */
-const EXPLORE_WEIGHT = 1.1;
-/** X's "new author boost", applied to a first sighting of a language/owner. */
-const FIRST_SIGHTING_BOOST = 0.45;
-/** Similarity cost in the reranker — X's DPP reranker, cheaply. */
-const SIMILARITY_PENALTY = 0.55;
-/** X's repeated-author decay, applied per owner inside one window. */
-const REPEAT_DECAY = 0.55;
-const REPEAT_FLOOR = 0.18;
-/**
- * Milder per-language decay. Languages don't show up in Jaccard similarity
- * strongly enough to stop one ecosystem flooding a window, so a couple of a
- * language are free and each further one costs a little.
- */
-const LANGUAGE_REPEAT_FREE = 2;
-const LANGUAGE_REPEAT_DECAY = 0.8;
-const LANGUAGE_REPEAT_FLOOR = 0.5;
-/** Slots in every window reserved for exploration instead of score. */
-const EXPLORE_SLOTS = 6;
-/** Scored candidates the selector chooses from, after the catalog scan. */
-const CANDIDATE_POOL = 400;
-
-/** 1 while a project is fresh, 0.5 at the half-life, →0 as it ages. */
-function freshness(pushedAt: number | undefined, now: number): number {
-  if (!pushedAt) return 0;
-  const ageDays = Math.max(0, (now - pushedAt) / 86_400_000);
-  return 0.5 ** (ageDays / FRESH_HALF_LIFE_DAYS);
-}
-
-/**
- * Optimism under uncertainty (the bandit rule): a facet the viewer has barely
- * been shown can still teach the feed something, so it is worth surfacing.
- */
-function optimism(impressions: number, total: number): number {
-  return Math.sqrt(Math.log(total + 2) / (1 + impressions));
-}
-
-/** Everything a similarity check cares about: topics, language and owner. */
-function facetsOf(repo: Doc<"repos">): Set<string> {
-  const facets = new Set<string>();
-  for (const topic of repo.topics) facets.add(`t:${topic}`);
-  if (repo.language) facets.add(`l:${repo.language}`);
-  facets.add(`o:${repo.owner}`);
-  return facets;
-}
-
-function jaccard(a: Set<string>, b: Set<string>): number {
-  let shared = 0;
-  for (const value of a) if (b.has(value)) shared += 1;
-  return shared / (a.size + b.size - shared);
-}
-
-/** How much of a project's facets the viewer has never been shown at all. */
-function unexploredness(repo: Doc<"repos">, signals: Signals): number {
-  let novelty = 0;
-  if (repo.language && (signals.languageSeen.get(repo.language) ?? 0) === 0) {
-    novelty += 1;
-  }
-  if ((signals.ownerSeen.get(repo.owner) ?? 0) === 0) novelty += 1;
-  if (repo.topics.length > 0) {
-    let sum = 0;
-    for (const topic of repo.topics) {
-      sum += optimism(signals.topicSeen.get(topic) ?? 0, signals.totalImpressions);
-    }
-    novelty += sum / repo.topics.length;
-  }
-  return novelty;
-}
-
-interface Signals {
-  now: number;
-  totalImpressions: number;
-  topicAffinity: Map<string, number>;
-  languageAffinity: Map<string, number>;
-  ownerAffinity: Map<string, number>;
-  topicDislike: Map<string, number>;
-  languageDislike: Map<string, number>;
-  ownerDislike: Map<string, number>;
-  topicSeen: Map<string, number>;
-  languageSeen: Map<string, number>;
-  ownerSeen: Map<string, number>;
-}
-
-interface Scored {
-  repo: Doc<"repos">;
-  score: number;
-  /** How much of this project the viewer has never been shown. */
-  explore: number;
-  facets: Set<string>;
-}
-
-/**
- * One weighted sum over the signals we have — the same shape as X's
- * `RankingScorer`, which blends predicted actions into a single score.
- */
-function scoreProject(repo: Doc<"repos">, signals: Signals): number {
-  if (repo.archived) return -100;
-
-  let score = Math.min(Math.log10(repo.stars + 1) * STARS_WEIGHT, STARS_CAP);
-  score += freshness(repo.pushedAt, signals.now) * FRESH_WEIGHT;
-
-  // Star velocity beats star count: a project gaining stars fast — or
-  // accelerating — is worth seeing before everyone else has.
-  const growth = repo.starGrowth7d ?? 0;
-  if (growth > 0) {
-    score += Math.min(VELOCITY_CAP, Math.log10(1 + growth) * VELOCITY_WEIGHT);
-  }
-  const accel = repo.starAccel ?? 0;
-  if (accel > 0) {
-    score += Math.min(ACCEL_CAP, Math.log10(1 + accel) * ACCEL_WEIGHT);
-  }
-
-  // A project is as interesting as its best topic, not the sum of all twelve:
-  // otherwise a repo tagged with everything outranks one tagged honestly.
-  let topicAffinityMax = 0;
-  let topicDislikeMax = 0;
-  let topicExplore = 0;
-  for (const topic of repo.topics) {
-    topicAffinityMax = Math.max(topicAffinityMax, signals.topicAffinity.get(topic) ?? 0);
-    topicDislikeMax = Math.min(topicDislikeMax, signals.topicDislike.get(topic) ?? 0);
-    topicExplore += optimism(signals.topicSeen.get(topic) ?? 0, signals.totalImpressions);
-  }
-  score += affinityWeight(topicAffinityMax) * AFFINITY_TOPIC;
-  score += topicDislikeMax;
-  if (repo.topics.length > 0) {
-    score += (topicExplore / repo.topics.length) * EXPLORE_WEIGHT * 0.4;
-  }
-
-  if (repo.language) {
-    const seen = signals.languageSeen.get(repo.language) ?? 0;
-    score += affinityWeight(signals.languageAffinity.get(repo.language) ?? 0) * AFFINITY_LANGUAGE;
-    score += signals.languageDislike.get(repo.language) ?? 0;
-    score += optimism(seen, signals.totalImpressions) * EXPLORE_WEIGHT * 0.8;
-    if (seen === 0) score += FIRST_SIGHTING_BOOST;
-  }
-
-  const ownerSeen = signals.ownerSeen.get(repo.owner) ?? 0;
-  score += affinityWeight(signals.ownerAffinity.get(repo.owner) ?? 0) * AFFINITY_OWNER;
-  score += signals.ownerDislike.get(repo.owner) ?? 0;
-  score += optimism(ownerSeen, signals.totalImpressions) * EXPLORE_WEIGHT * 0.5;
-  if (ownerSeen === 0) score += FIRST_SIGHTING_BOOST;
-
-  // Never lose a project to a tie: the jitter is stable per project.
-  score += ((repo.repoId % 997) / 997) * JITTER_WEIGHT;
-  return score;
-}
-
-/**
- * Greedy reranker. X's `vm-ranker` reorders scored posts with a determinantal
- * point process so neighbours are less alike — "giving up a little score for
- * less similarity" — and decays a repeated author's posts. This is the cheap
- * version of both: take the project that is worth the most after subtracting
- * its similarity to the window, and decay owners already in it.
- */
-function selectWindow(pool: Scored[], size: number): Scored[] {
-  const chosen: Scored[] = [];
-  const remaining = [...pool];
-  const ownerRepeats = new Map<string, number>();
-  const languageRepeats = new Map<string, number>();
-
-  while (chosen.length < size && remaining.length > 0) {
-    let bestIndex = 0;
-    let bestValue = -Infinity;
-
-    for (let index = 0; index < remaining.length; index += 1) {
-      const entry = remaining[index];
-      let similarity = 0;
-      for (const picked of chosen) {
-        similarity = Math.max(similarity, jaccard(entry.facets, picked.facets));
-      }
-      const repeats = ownerRepeats.get(entry.repo.owner) ?? 0;
-      const decay = repeats === 0 ? 1 : Math.max(REPEAT_FLOOR, REPEAT_DECAY ** repeats);
-      const language = entry.repo.language;
-      const languageCount = language ? (languageRepeats.get(language) ?? 0) : 0;
-      const languageDecay =
-        languageCount < LANGUAGE_REPEAT_FREE
-          ? 1
-          : Math.max(
-              LANGUAGE_REPEAT_FLOOR,
-              LANGUAGE_REPEAT_DECAY ** (languageCount - LANGUAGE_REPEAT_FREE + 1),
-            );
-      const value = (entry.score - SIMILARITY_PENALTY * similarity) * decay * languageDecay;
-      if (value > bestValue) {
-        bestValue = value;
-        bestIndex = index;
-      }
-    }
-
-    const [picked] = remaining.splice(bestIndex, 1);
-    chosen.push(picked);
-    ownerRepeats.set(picked.repo.owner, (ownerRepeats.get(picked.repo.owner) ?? 0) + 1);
-    if (picked.repo.language) {
-      languageRepeats.set(
-        picked.repo.language,
-        (languageRepeats.get(picked.repo.language) ?? 0) + 1,
-      );
-    }
-  }
-
-  return chosen;
-}
-
-/** Spread exploration picks through the window instead of bunching them up. */
-function interleave(explore: Scored[], ranked: Scored[], size: number): Scored[] {
-  if (explore.length === 0) return ranked.slice(0, size);
-  const every = Math.max(1, Math.round(size / explore.length));
-  const out: Scored[] = [];
-  let e = 0;
-  let r = 0;
-  while (out.length < size && (e < explore.length || r < ranked.length)) {
-    if (e < explore.length && out.length % every === 0) {
-      out.push(explore[e]);
-      e += 1;
-    } else if (r < ranked.length) {
-      out.push(ranked[r]);
-      r += 1;
-    } else {
-      out.push(explore[e]);
-      e += 1;
-    }
-  }
-  return out;
+/** Convert a `repos` document to the ranking boundary shape. */
+function toSnapshot(repo: Doc<"repos">): RepoSnapshot {
+  return {
+    repoId: repo.repoId,
+    fullName: repo.fullName,
+    owner: repo.owner,
+    name: repo.name,
+    description: repo.description,
+    stars: repo.stars,
+    forks: repo.forks,
+    openIssues: repo.openIssues,
+    language: repo.language,
+    topics: repo.topics,
+    pushedAt: repo.pushedAt,
+    archived: repo.archived,
+    discoveredVia: repo.discoveredVia,
+    starGrowth7d: repo.starGrowth7d,
+    starAccel: repo.starAccel,
+  };
 }
 
 /* ------------------------------------------------------------------ *
@@ -684,7 +507,10 @@ export const removeTopic = mutation({
  * Nothing here is limited to the user's topics — those only add weight.
  */
 export const discovery = query({
-  args: { excludeRepoIds: v.optional(v.array(v.number())), limit: v.optional(v.number()) },
+  args: {
+    excludeRepoIds: v.optional(v.array(v.number())),
+    limit: v.optional(v.number()),
+  },
   handler: async (ctx, { excludeRepoIds, limit }) => {
     const userId = await getAuthUserId(ctx);
     if (!userId) return null;
@@ -697,94 +523,42 @@ export const discovery = query({
     const repos = await ctx.db.query("repos").collect();
     const byId = new Map(repos.map((repo) => [repo.repoId, repo]));
 
-    const signals: Signals = {
-      now: Date.now(),
-      totalImpressions: 0,
-      topicAffinity: new Map(),
-      languageAffinity: new Map(),
-      ownerAffinity: new Map(),
-      topicDislike: new Map(),
-      languageDislike: new Map(),
-      ownerDislike: new Map(),
-      topicSeen: new Map(),
-      languageSeen: new Map(),
-      ownerSeen: new Map(),
-    };
-
-    for (const row of rows) {
+    // Every rating row pairs with its repository for signal building; rows
+    // whose repo left the catalog still count as touched (never re-served).
+    const rated = rows.flatMap((row) => {
       const repo = byId.get(row.repoId);
-      if (!repo) continue;
-
-      // Every row is one impression, which is what "exposure" means here.
-      // Counting it from the catalog we already read costs no extra queries.
-      signals.totalImpressions += 1;
-      countBy(repo.topics, signals.topicSeen);
-      if (repo.language) countBy([repo.language], signals.languageSeen);
-      countBy([repo.owner], signals.ownerSeen);
-
-      if ((row.value ?? 0) >= 4) {
-        countBy(repo.topics, signals.topicAffinity);
-        if (repo.language) countBy([repo.language], signals.languageAffinity);
-        countBy([repo.owner], signals.ownerAffinity);
-        continue;
-      }
-
-      const skipped = row.hidden === true;
-      const uninteresting = typeof row.value === "number" && row.value <= 2;
-      if (!skipped && !uninteresting) continue;
-      // A skip says more than a low score does.
-      const weight = skipped ? 1 : 0.6;
-      lower(signals.topicDislike, repo.topics, DISLIKE_TOPIC * weight);
-      if (repo.language) {
-        lower(signals.languageDislike, [repo.language], DISLIKE_LANGUAGE * weight);
-      }
-      lower(signals.ownerDislike, [repo.owner], DISLIKE_OWNER * weight);
-    }
+      return repo
+        ? [
+            {
+              repo: toSnapshot(repo),
+              value: row.value,
+              saved: row.saved,
+              hidden: row.hidden,
+              githubOpens: row.githubOpens,
+              readmeOpens: row.readmeOpens,
+              dwellMs: row.dwellMs,
+            },
+          ]
+        : [];
+    });
+    const signals = buildSignals(Date.now(), rated);
+    const followed = await followedTopicsFor(ctx, userId);
 
     const excluded = new Set(excludeRepoIds ?? []);
-    const candidates = repos.filter(
-      (repo) => !touched.has(repo.repoId) && !excluded.has(repo.repoId),
+    // NOTE (perf): the whole-catalog scan is preserved in this refactor PR so
+    // behaviour stays comparable. PR4 replaces it with a persisted per-user
+    // feed queue and bounded reads.
+    const { window, unseenCount } = assembleFeed(
+      repos.map(toSnapshot),
+      signals,
+      touched,
+      excluded,
+      { limit, followedTopics: followed },
     );
-
-    const size = Math.max(1, Math.min(limit ?? FEED_WINDOW, FEED_WINDOW));
-    const scored: Scored[] = candidates.map((repo) => ({
-      repo,
-      score: scoreProject(repo, signals),
-      explore: unexploredness(repo, signals),
-      facets: facetsOf(repo),
-    }));
-
-    const pool = scored
-      .sort((a, b) => b.score - a.score || a.repo.repoId - b.repo.repoId)
-      .slice(0, CANDIDATE_POOL);
-
-    // A slice of every window is chosen for exploration rather than for score,
-    // from the facets the viewer has never met — the bandit-style half of the
-    // feed that keeps whole domains from staying invisible forever. The slice
-    // cools as impressions accumulate: early on the feed is mostly discovery,
-    // later it leans on what it has learned and exploration halves.
-    const exploreCool = Math.max(0.5, 1 - signals.totalImpressions / 300);
-    const exploreSlots = Math.min(
-      EXPLORE_SLOTS,
-      Math.max(1, Math.floor((size / 3) * exploreCool)),
-    );
-    const explorers = selectWindow(
-      pool
-        .filter((entry) => entry.explore >= 1)
-        .sort((a, b) => b.explore - a.explore || b.score - a.score)
-        .slice(0, exploreSlots * 4),
-      exploreSlots,
-    );
-    const exploreIds = new Set(explorers.map((entry) => entry.repo.repoId));
-    const ranked = selectWindow(
-      pool.filter((entry) => !exploreIds.has(entry.repo.repoId)),
-      size - explorers.length,
-    );
-    const window = interleave(explorers, ranked, size);
 
     return {
       repoIds: window.map((entry) => entry.repo.repoId),
-      remaining: Math.max(0, candidates.length - window.length),
+      remaining: Math.max(0, unseenCount - window.length),
       catalogSize: repos.length,
       rated: rows.filter(
         (row) => typeof row.value === "number" && row.implicit !== true,
@@ -803,14 +577,42 @@ export const projects = query({
     // The client holds a rolling window of cards; this matches its cap.
     const unique = [...new Set(repoIds)].slice(0, 160);
     const interactions = await interactionsForUser(ctx, userId);
+    // Explanations reuse the same signals the ranker used. Rebuilt here from
+    // the user's own rows (bounded per user); the persisted queue (PR4) will
+    // carry reasons with each card instead.
+    const signals = await signalsForUser(ctx, userId, Date.now());
+    const followed = await followedTopicsFor(ctx, userId);
+
     // One scan feeds every card — no per-id lookups.
     const byId = new Map(
-      (await ctx.db.query("repos").collect()).map((repo) => [repo.repoId, repo]),
+      (await ctx.db.query("repos").collect()).map((repo) => [
+        repo.repoId,
+        repo,
+      ]),
     );
 
     const items = unique.flatMap((repoId) => {
       const repo = byId.get(repoId);
-      return repo ? [toProject(repo, interactions.get(repoId) ?? null)] : [];
+      if (!repo) return [];
+      const snapshot = toSnapshot(repo);
+      const { features } = scoreProject(snapshot, signals, undefined, {
+        followedTopics: followed,
+      });
+      const sources = tagSources(snapshot, signals, followed);
+      const reasons = explainCandidate({
+        candidate: {
+          repo: snapshot,
+          score: 0,
+          explore: 0,
+          facets: new Set<string>(),
+          sources,
+          features,
+          parts: [],
+        },
+        signals,
+        followedTopics: followed,
+      });
+      return [toProject(repo, interactions.get(repoId) ?? null, reasons)];
     });
 
     return { items };
@@ -845,11 +647,7 @@ export const readme = query({
 /** Saved, rated and hidden projects — the user's own library. */
 export const library = query({
   args: {
-    kind: v.union(
-      v.literal("saved"),
-      v.literal("rated"),
-      v.literal("hidden"),
-    ),
+    kind: v.union(v.literal("saved"), v.literal("rated"), v.literal("hidden")),
   },
   handler: async (ctx, { kind }) => {
     const userId = await getAuthUserId(ctx);
@@ -872,7 +670,10 @@ export const library = query({
 
     // One scan feeds every row — no per-id lookups.
     const repos = new Map(
-      (await ctx.db.query("repos").collect()).map((repo) => [repo.repoId, repo]),
+      (await ctx.db.query("repos").collect()).map((repo) => [
+        repo.repoId,
+        repo,
+      ]),
     );
 
     const items = selected.flatMap((row) => {
@@ -972,7 +773,189 @@ export const catalog = query({
 
 /* ------------------------------------------------------------------ *
  * Interactions                                                        *
+ *                                                                     *
+ * Every mutation below does three things: persist current state in     *
+ * `ratings`, append history to `interactionEvents`, and fold the delta *
+ * into the incremental `userRecProfiles` document.                   *
  * ------------------------------------------------------------------ */
+
+/** Event kinds the client may report directly (state changes log their own). */
+export const trackableEventValidator = v.union(
+  v.literal("readme_opened"),
+  v.literal("github_opened"),
+  v.literal("homepage_opened"),
+  v.literal("dwell"),
+  v.literal("previous"),
+  v.literal("next"),
+);
+
+/** Dwell reports outside this window are ignored (background-tab noise). */
+const MIN_DWELL_MS = 1_000;
+const MAX_DWELL_MS = 600_000;
+const MAX_TOTAL_DWELL_MS = 3_600_000;
+
+function toRowState(
+  row: {
+    value?: number;
+    saved?: boolean;
+    hidden?: boolean;
+    githubOpens?: number;
+    readmeOpens?: number;
+  } | null,
+): RowState {
+  if (!row) return {};
+  return {
+    value: row.value,
+    saved: row.saved,
+    hidden: row.hidden,
+    githubOpens: row.githubOpens,
+    readmeOpens: row.readmeOpens,
+  };
+}
+
+async function loadRatingRow(
+  ctx: MutationCtx,
+  userId: Id<"users">,
+  repoId: number,
+) {
+  return await ctx.db
+    .query("ratings")
+    .withIndex("by_user_repo", (q) =>
+      q.eq("userId", userId).eq("repoId", repoId),
+    )
+    .unique();
+}
+
+/** Facets for profile math; missing repos contribute counts but no facets. */
+async function facetsForRepo(ctx: MutationCtx, repoId: number) {
+  const repo = await ctx.db
+    .query("repos")
+    .withIndex("by_repo_id", (q) => q.eq("repoId", repoId))
+    .unique();
+  return {
+    topics: repo?.topics ?? [],
+    language: repo?.language,
+    owner: repo?.owner ?? "",
+  };
+}
+
+async function appendEvent(
+  ctx: MutationCtx,
+  userId: Id<"users">,
+  repoId: number,
+  kind:
+    | "impression"
+    | "rating"
+    | "rating_removed"
+    | "saved"
+    | "unsaved"
+    | "hidden"
+    | "unhidden"
+    | "readme_opened"
+    | "github_opened"
+    | "homepage_opened"
+    | "dwell"
+    | "previous"
+    | "next",
+  value?: number,
+): Promise<void> {
+  await ctx.db.insert("interactionEvents", {
+    userId,
+    repoId,
+    kind,
+    value,
+    createdAt: Date.now(),
+  });
+}
+
+async function loadProfile(
+  ctx: MutationCtx,
+  userId: Id<"users">,
+): Promise<{ docId: Id<"userRecProfiles"> | null; profile: ProfileSnapshot }> {
+  const doc = await ctx.db
+    .query("userRecProfiles")
+    .withIndex("by_user", (q) => q.eq("userId", userId))
+    .unique();
+  if (!doc) return { docId: null, profile: emptyProfile() };
+  return {
+    docId: doc._id,
+    profile: {
+      ratingCount: doc.ratingCount,
+      impressionCount: doc.impressionCount,
+      positiveCount: doc.positiveCount,
+      negativeCount: doc.negativeCount,
+      savedCount: doc.savedCount,
+      hiddenCount: doc.hiddenCount,
+      githubOpenCount: doc.githubOpenCount,
+      readmeOpenCount: doc.readmeOpenCount,
+      ...fromStorable(doc),
+      feedVersion: doc.feedVersion,
+    },
+  };
+}
+
+async function storeProfile(
+  ctx: MutationCtx,
+  userId: Id<"users">,
+  docId: Id<"userRecProfiles"> | null,
+  profile: ProfileSnapshot,
+): Promise<void> {
+  const now = Date.now();
+  const storable = toStorable(profile);
+  if (!docId) {
+    await ctx.db.insert("userRecProfiles", {
+      userId,
+      ratingCount: profile.ratingCount,
+      impressionCount: profile.impressionCount,
+      positiveCount: profile.positiveCount,
+      negativeCount: profile.negativeCount,
+      savedCount: profile.savedCount,
+      hiddenCount: profile.hiddenCount,
+      githubOpenCount: profile.githubOpenCount,
+      readmeOpenCount: profile.readmeOpenCount,
+      ...storable,
+      feedVersion: profile.feedVersion,
+      updatedAt: now,
+    });
+    return;
+  }
+  await ctx.db.patch(docId, {
+    ratingCount: profile.ratingCount,
+    impressionCount: profile.impressionCount,
+    positiveCount: profile.positiveCount,
+    negativeCount: profile.negativeCount,
+    savedCount: profile.savedCount,
+    hiddenCount: profile.hiddenCount,
+    githubOpenCount: profile.githubOpenCount,
+    readmeOpenCount: profile.readmeOpenCount,
+    ...storable,
+    feedVersion: profile.feedVersion,
+    updatedAt: now,
+  });
+}
+
+/**
+ * Fold one row transition into the incremental profile. Loads, updates and
+ * stores the single per-user profile document.
+ */
+async function trackProfileTransition(
+  ctx: MutationCtx,
+  userId: Id<"users">,
+  prev: RowState | null,
+  next: RowState,
+  repoId: number,
+  created: boolean,
+): Promise<void> {
+  const { docId, profile } = await loadProfile(ctx, userId);
+  applyTransition(
+    profile,
+    prev,
+    next,
+    await facetsForRepo(ctx, repoId),
+    created,
+  );
+  await storeProfile(ctx, userId, docId, profile);
+}
 
 async function upsertInteraction(
   ctx: MutationCtx,
@@ -987,12 +970,7 @@ async function upsertInteraction(
   },
 ): Promise<void> {
   const now = Date.now();
-  const existing = await ctx.db
-    .query("ratings")
-    .withIndex("by_user_repo", (q) =>
-      q.eq("userId", userId).eq("repoId", repoId),
-    )
-    .unique();
+  const existing = await loadRatingRow(ctx, userId, repoId);
 
   if (existing) {
     await ctx.db.patch(existing._id, { ...patch, updatedAt: now });
@@ -1015,12 +993,23 @@ export const setRating = mutation({
     const userId = await getAuthUserId(ctx);
     if (!userId) throw new Error("Sign in to rate projects.");
     const clamped = Math.max(1, Math.min(5, Math.round(value)));
+    const existing = await loadRatingRow(ctx, userId, repoId);
+    const prev = toRowState(existing);
     // A deliberate rating replaces an imported one: clear the implicit flag so
     // the rating counts in stats and Wrapped.
     await upsertInteraction(ctx, userId, repoId, {
       value: clamped,
       implicit: undefined,
     });
+    await appendEvent(ctx, userId, repoId, "rating", clamped);
+    await trackProfileTransition(
+      ctx,
+      userId,
+      prev,
+      { ...prev, value: clamped },
+      repoId,
+      !existing,
+    );
     return clamped;
   },
 });
@@ -1031,13 +1020,9 @@ export const clearRating = mutation({
   handler: async (ctx, { repoId }) => {
     const userId = await getAuthUserId(ctx);
     if (!userId) throw new Error("Sign in to rate projects.");
-    const existing = await ctx.db
-      .query("ratings")
-      .withIndex("by_user_repo", (q) =>
-        q.eq("userId", userId).eq("repoId", repoId),
-      )
-      .unique();
+    const existing = await loadRatingRow(ctx, userId, repoId);
     if (existing) {
+      const prev = toRowState(existing);
       await ctx.db.patch(existing._id, {
         value: undefined,
         // A deliberate clear ends the row's life as imported taste too:
@@ -1045,6 +1030,15 @@ export const clearRating = mutation({
         implicit: undefined,
         updatedAt: Date.now(),
       });
+      await appendEvent(ctx, userId, repoId, "rating_removed");
+      await trackProfileTransition(
+        ctx,
+        userId,
+        prev,
+        { ...prev, value: undefined },
+        repoId,
+        false,
+      );
     }
     return null;
   },
@@ -1056,7 +1050,18 @@ export const setSaved = mutation({
   handler: async (ctx, { repoId, saved }) => {
     const userId = await getAuthUserId(ctx);
     if (!userId) throw new Error("Sign in to save projects.");
+    const existing = await loadRatingRow(ctx, userId, repoId);
+    const prev = toRowState(existing);
     await upsertInteraction(ctx, userId, repoId, { saved });
+    await appendEvent(ctx, userId, repoId, saved ? "saved" : "unsaved");
+    await trackProfileTransition(
+      ctx,
+      userId,
+      prev,
+      { ...prev, saved },
+      repoId,
+      !existing,
+    );
     return saved;
   },
 });
@@ -1067,8 +1072,102 @@ export const setHidden = mutation({
   handler: async (ctx, { repoId, hidden }) => {
     const userId = await getAuthUserId(ctx);
     if (!userId) throw new Error("Sign in to hide projects.");
+    const existing = await loadRatingRow(ctx, userId, repoId);
+    const prev = toRowState(existing);
     await upsertInteraction(ctx, userId, repoId, { hidden });
+    await appendEvent(ctx, userId, repoId, hidden ? "hidden" : "unhidden");
+    await trackProfileTransition(
+      ctx,
+      userId,
+      prev,
+      { ...prev, hidden },
+      repoId,
+      !existing,
+    );
     return hidden;
+  },
+});
+
+/**
+ * Client-reported engagement: README/GitHub opens, aggregated dwell, and
+ * navigation. Opens bump bounded per-row counters (ranking input); dwell is
+ * stored for evaluation but excluded from affinity.
+ */
+export const trackEvent = mutation({
+  args: {
+    repoId: v.number(),
+    kind: trackableEventValidator,
+    value: v.optional(v.number()),
+  },
+  handler: async (ctx, { repoId, kind, value }) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) throw new Error("Sign in to interact with projects.");
+    const existing = await loadRatingRow(ctx, userId, repoId);
+    const prev = toRowState(existing);
+    const now = Date.now();
+
+    if (kind === "dwell") {
+      const ms = Math.round(value ?? 0);
+      if (!Number.isFinite(ms) || ms < MIN_DWELL_MS || ms > MAX_DWELL_MS) {
+        return null;
+      }
+      const total = Math.min((existing?.dwellMs ?? 0) + ms, MAX_TOTAL_DWELL_MS);
+      if (existing) {
+        await ctx.db.patch(existing._id, { dwellMs: total, updatedAt: now });
+      } else {
+        await ctx.db.insert("ratings", {
+          userId,
+          repoId,
+          seenAt: now,
+          createdAt: now,
+          updatedAt: now,
+          dwellMs: total,
+        });
+      }
+      await appendEvent(ctx, userId, repoId, "dwell", ms);
+      if (!existing) {
+        // A dwell-only row is still an impression for the profile.
+        const { docId, profile } = await loadProfile(ctx, userId);
+        applyImpressions(profile, 1);
+        await storeProfile(ctx, userId, docId, profile);
+      }
+      return total;
+    }
+
+    if (kind === "github_opened" || kind === "readme_opened") {
+      const field = kind === "github_opened" ? "githubOpens" : "readmeOpens";
+      const nextCount = (existing?.[field] ?? 0) + 1;
+      const patch =
+        field === "githubOpens"
+          ? { githubOpens: nextCount }
+          : { readmeOpens: nextCount };
+      if (existing) {
+        await ctx.db.patch(existing._id, { ...patch, updatedAt: now });
+      } else {
+        await ctx.db.insert("ratings", {
+          userId,
+          repoId,
+          seenAt: now,
+          createdAt: now,
+          updatedAt: now,
+          ...patch,
+        });
+      }
+      await appendEvent(ctx, userId, repoId, kind);
+      await trackProfileTransition(
+        ctx,
+        userId,
+        prev,
+        { ...prev, [field]: nextCount },
+        repoId,
+        !existing,
+      );
+      return nextCount;
+    }
+
+    // homepage_opened / previous / next: history only, no state change.
+    await appendEvent(ctx, userId, repoId, kind, value);
+    return null;
   },
 });
 
@@ -1080,13 +1179,9 @@ export const markSeen = mutation({
     if (!userId) return null;
 
     const unique = [...new Set(repoIds)].slice(0, 60);
+    let created = 0;
     for (const repoId of unique) {
-      const existing = await ctx.db
-        .query("ratings")
-        .withIndex("by_user_repo", (q) =>
-          q.eq("userId", userId).eq("repoId", repoId),
-        )
-        .unique();
+      const existing = await loadRatingRow(ctx, userId, repoId);
       if (existing) continue;
       const now = Date.now();
       await ctx.db.insert("ratings", {
@@ -1096,6 +1191,14 @@ export const markSeen = mutation({
         createdAt: now,
         updatedAt: now,
       });
+      await appendEvent(ctx, userId, repoId, "impression");
+      created += 1;
+    }
+    if (created > 0) {
+      // One profile write for the whole batch, not one per row.
+      const { docId, profile } = await loadProfile(ctx, userId);
+      applyImpressions(profile, created);
+      await storeProfile(ctx, userId, docId, profile);
     }
     return unique.length;
   },

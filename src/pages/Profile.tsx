@@ -2,7 +2,14 @@ import { useState } from "react";
 import { Link, useParams } from "react-router";
 import { useMutation, useQuery } from "convex/react";
 import { motion } from "framer-motion";
-import { Copy, ExternalLink, Globe, Lock, Star, TrendingUp } from "lucide-react";
+import {
+  Copy,
+  ExternalLink,
+  Globe,
+  Lock,
+  Star,
+  TrendingUp,
+} from "lucide-react";
 import { toast } from "sonner";
 
 import { Loading } from "@/components/feed/loading";
@@ -83,7 +90,9 @@ export default function Profile() {
             <div className="flex flex-wrap items-start justify-between gap-4 border-b border-border pb-6">
               <div>
                 <p className="font-mono text-[11px] tracking-[0.16em] text-muted-foreground uppercase">
-                  {profile.isPublic ? "Public shelf" : "Private shelf · preview"}
+                  {profile.isPublic
+                    ? "Public shelf"
+                    : "Private shelf · preview"}
                 </p>
                 <h1 className="mt-3 text-3xl font-semibold tracking-tight">
                   {profile.name}

@@ -96,9 +96,7 @@ const convex = new ConvexReactClient(import.meta.env.VITE_CONVEX_URL as string);
 function RouteErrorBoundary({ children }: { children: React.ReactNode }) {
   const location = useLocation();
   return (
-    <RootErrorBoundary key={location.pathname}>
-      {children}
-    </RootErrorBoundary>
+    <RootErrorBoundary key={location.pathname}>{children}</RootErrorBoundary>
   );
 }
 
@@ -125,7 +123,6 @@ function RouteSyncer() {
   return null;
 }
 
-
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <RootErrorBoundary>
@@ -138,58 +135,58 @@ createRoot(document.getElementById("root")!).render(
           <RouteErrorBoundary>
             <Suspense fallback={<RouteLoading />}>
               <Routes>
-              <Route path="/" element={<Landing />} />
-              <Route
-                path="/auth"
-                element={<AuthPage redirectAfterAuth="/feed" />}
-              />
-              <Route
-                path="/feed"
-                element={
-                  <RequireAuth
-                    title="Sign in to open your feed"
-                    description="Your discovery feed is built from your own ratings."
-                  >
-                    <Feed />
-                  </RequireAuth>
-                }
-              />
-              <Route
-                path="/dashboard"
-                element={
-                  <RequireAuth
-                    title="Sign in to open your dashboard"
-                    description="Your totals, your library and the topics steering your feed live here."
-                  >
-                    <Dashboard />
-                  </RequireAuth>
-                }
-              />
-              <Route
-                path="/collections"
-                element={
-                  <RequireAuth
-                    title="Sign in to see your collections"
-                    description="Curated shelves of projects, shareable by link."
-                  >
-                    <Collections />
-                  </RequireAuth>
-                }
-              />
-              <Route
-                path="/wrapped"
-                element={
-                  <RequireAuth
-                    title="Sign in to see your year"
-                    description="Your ratings, your taste, in review."
-                  >
-                    <Wrapped />
-                  </RequireAuth>
-                }
-              />
-              <Route path="/c/:collectionId" element={<SharedCollection />} />
-              <Route path="/u/:userId" element={<Profile />} />
-              <Route path="*" element={<NotFound />} />
+                <Route path="/" element={<Landing />} />
+                <Route
+                  path="/auth"
+                  element={<AuthPage redirectAfterAuth="/feed" />}
+                />
+                <Route
+                  path="/feed"
+                  element={
+                    <RequireAuth
+                      title="Sign in to open your feed"
+                      description="Your discovery feed is built from your own ratings."
+                    >
+                      <Feed />
+                    </RequireAuth>
+                  }
+                />
+                <Route
+                  path="/dashboard"
+                  element={
+                    <RequireAuth
+                      title="Sign in to open your dashboard"
+                      description="Your totals, your library and the topics steering your feed live here."
+                    >
+                      <Dashboard />
+                    </RequireAuth>
+                  }
+                />
+                <Route
+                  path="/collections"
+                  element={
+                    <RequireAuth
+                      title="Sign in to see your collections"
+                      description="Curated shelves of projects, shareable by link."
+                    >
+                      <Collections />
+                    </RequireAuth>
+                  }
+                />
+                <Route
+                  path="/wrapped"
+                  element={
+                    <RequireAuth
+                      title="Sign in to see your year"
+                      description="Your ratings, your taste, in review."
+                    >
+                      <Wrapped />
+                    </RequireAuth>
+                  }
+                />
+                <Route path="/c/:collectionId" element={<SharedCollection />} />
+                <Route path="/u/:userId" element={<Profile />} />
+                <Route path="*" element={<NotFound />} />
               </Routes>
             </Suspense>
           </RouteErrorBoundary>
