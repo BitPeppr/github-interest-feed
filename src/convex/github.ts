@@ -286,7 +286,10 @@ export const enrich = action({
  */
 export const importStars = action({
   args: { username: v.string() },
-  handler: async (ctx, { username }): Promise<{
+  handler: async (
+    ctx,
+    { username },
+  ): Promise<{
     imported: number;
     total: number;
     skipped: number;
@@ -463,10 +466,14 @@ export const refreshStarSnapshots = internalAction({
         Math.max(when - Date.now(), SNAPSHOT_RETRY_MIN_MS),
         SNAPSHOT_RETRY_MAX_MS,
       );
-      await ctx.scheduler.runAfter(delay, internal.github.refreshStarSnapshots, {
-        attempt: tries + 1,
-        targets: remaining.slice(0, SNAPSHOT_TARGETS),
-      });
+      await ctx.scheduler.runAfter(
+        delay,
+        internal.github.refreshStarSnapshots,
+        {
+          attempt: tries + 1,
+          targets: remaining.slice(0, SNAPSHOT_TARGETS),
+        },
+      );
     }
     return { refreshed: entries.length, deferred: remaining.length };
   },

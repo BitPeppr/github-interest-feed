@@ -104,7 +104,11 @@ export default function SharedCollection() {
                         GitHub
                       </a>
                     </div>
-                    <TopicChips topics={item.topics} count={6} className="mt-3" />
+                    <TopicChips
+                      topics={item.topics}
+                      count={6}
+                      className="mt-3"
+                    />
                   </li>
                 );
               })}

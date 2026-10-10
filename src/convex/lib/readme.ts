@@ -59,8 +59,10 @@ function resolveImageUrl(raw: string, fullName: string): string | null {
 
   let absolute: string;
   try {
-    absolute = new URL(trimmed, `https://raw.githubusercontent.com/${fullName}/HEAD/`)
-      .toString();
+    absolute = new URL(
+      trimmed,
+      `https://raw.githubusercontent.com/${fullName}/HEAD/`,
+    ).toString();
   } catch {
     return null;
   }
@@ -70,7 +72,9 @@ function resolveImageUrl(raw: string, fullName: string): string | null {
     return null;
   }
 
-  const isAttachment = /github\.com\/(user-attachments|assets)\//.test(absolute);
+  const isAttachment = /github\.com\/(user-attachments|assets)\//.test(
+    absolute,
+  );
   // SVG in a README is almost always a badge or a wordmark, not a screenshot.
   if (!isAttachment && !IMAGE_EXTENSION.test(absolute)) return null;
   if (absolute.endsWith(".svg")) return null;

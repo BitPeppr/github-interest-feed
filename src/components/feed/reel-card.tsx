@@ -1,10 +1,26 @@
 import { useEffect, useRef, useState } from "react";
-import { useAction, useQuery } from "convex/react";
-import { ArrowDown, ArrowUp, ArrowUpRight, Bookmark, ExternalLink, EyeOff, GitFork, Star, TrendingUp } from "lucide-react";
+import { useAction, useMutation, useQuery } from "convex/react";
+import {
+  ArrowDown,
+  ArrowUp,
+  ArrowUpRight,
+  Bookmark,
+  ExternalLink,
+  EyeOff,
+  GitFork,
+  Star,
+  TrendingUp,
+} from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Spinner } from "@/components/ui/spinner";
 import { InterestScale } from "@/components/feed/interest-scale";
 import { LanguageDot, TopicChips } from "@/components/feed/project-parts";
@@ -43,7 +59,10 @@ function HeroImage({ src, alt }: { src: string; alt: string }) {
         onError={() => setBroken(true)}
         className="h-52 w-full object-cover object-top"
       />
-      <div aria-hidden className="absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-card to-transparent" />
+      <div
+        aria-hidden
+        className="absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-card to-transparent"
+      />
     </div>
   );
 }
@@ -75,8 +94,13 @@ export function ReelCard({
 
   // The README is the substance of the card, so it loads for the project the
   // user is actually looking at instead of waiting for a click.
-  const readme = useQuery(api.feed.readme, active ? { repoId: project.repoId } : "skip");
+  const readme = useQuery(
+    api.feed.readme,
+    active ? { repoId: project.repoId } : "skip",
+  );
   const enrich = useAction(api.github.enrich);
+  const trackEvent = useMutation(api.feed.trackEvent);
+  const reported = useRef(new Set<string>());
 
   if (identity !== project.repoId) {
     setIdentity(project.repoId);
@@ -84,12 +108,29 @@ export function ReelCard({
   }
 
   useEffect(() => {
-    if (!active || !readme || readme.readmeLoaded || requested.current.has(project.repoId)) return;
+    if (
+      !active ||
+      !readme ||
+      readme.readmeLoaded ||
+      requested.current.has(project.repoId)
+    )
+      return;
     requested.current.add(project.repoId);
     void enrich({ repoIds: [project.repoId] }).catch((error) => {
-      toast.error(error instanceof Error ? error.message : "Could not load the README.");
+      toast.error(
+        error instanceof Error ? error.message : "Could not load the README.",
+      );
     });
   }, [active, enrich, project.repoId, readme]);
+
+  // Engagement is reported once per project: opening the README or GitHub
+  // is deliberate interest, worth more than a passive impression.
+  function report(kind: "readme_opened" | "github_opened") {
+    const key = `${project.repoId}:${kind}`;
+    if (reported.current.has(key)) return;
+    reported.current.add(key);
+    void trackEvent({ repoId: project.repoId, kind }).catch(() => {});
+  }
 
   const updated = formatRelative(project.pushedAt);
   const heroImage = readme?.images?.[0] ?? null;
@@ -105,7 +146,11 @@ export function ReelCard({
 
         <div className="flex items-center justify-between gap-4 border-b border-border/70 px-5 py-3 sm:px-8">
           <MetaLabel>№ {String(index).padStart(2, "0")}</MetaLabel>
-          <MetaLabel>{project.discoveredVia ? `via ${project.discoveredVia}` : "discovery"}</MetaLabel>
+          <MetaLabel>
+            {project.discoveredVia
+              ? `via ${project.discoveredVia}`
+              : "discovery"}
+          </MetaLabel>
         </div>
 
         <header className="flex items-start gap-4 px-5 pt-6 sm:px-8 sm:pt-7">
@@ -119,11 +164,14 @@ export function ReelCard({
             className="size-12 shrink-0 rounded-2xl border border-border bg-muted"
           />
           <div className="min-w-0 flex-1">
-            <p className="truncate text-xs tracking-wide text-muted-foreground">{project.owner}</p>
+            <p className="truncate text-xs tracking-wide text-muted-foreground">
+              {project.owner}
+            </p>
             <a
               href={project.url}
               target="_blank"
               rel="noreferrer noopener"
+              onClick={() => report("github_opened")}
               className="block truncate text-2xl font-semibold tracking-tight underline-offset-4 hover:underline sm:text-[28px]"
             >
               {project.name}
@@ -134,6 +182,7 @@ export function ReelCard({
               href={project.url}
               target="_blank"
               rel="noreferrer noopener"
+              onClick={() => report("github_opened")}
               aria-label={`Open ${project.fullName} on GitHub`}
             >
               <ExternalLink className="size-4" />
@@ -157,15 +206,23 @@ export function ReelCard({
             </span>
             {project.starGrowth7d != null && project.starGrowth7d >= 40 && (
               <span className="inline-flex items-center gap-1.5 text-foreground">
-                <TrendingUp className="size-4" aria-hidden />
-                +{formatCompact(project.starGrowth7d)} this week
+                <TrendingUp className="size-4" aria-hidden />+
+                {formatCompact(project.starGrowth7d)} this week
               </span>
             )}
             {project.license && <span>{project.license}</span>}
             {updated && <span>updated {updated}</span>}
-            {project.archived && <span className="text-foreground">Archived</span>}
+            {project.archived && (
+              <span className="text-foreground">Archived</span>
+            )}
           </div>
           <TopicChips topics={project.topics} count={6} className="mt-4" />
+          {project.reasons.length > 0 && (
+            <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
+              <span className="font-medium text-foreground/70">Why this: </span>
+              {project.reasons.join(" · ")}
+            </p>
+          )}
         </div>
 
         <section className="mt-6 border-t border-border/70">
@@ -175,7 +232,10 @@ export function ReelCard({
               variant="ghost"
               size="sm"
               className="gap-1 px-2 text-xs"
-              onClick={() => setReadmeOpen(true)}
+              onClick={() => {
+                report("readme_opened");
+                setReadmeOpen(true);
+              }}
               disabled={!body}
             >
               Full README
@@ -184,15 +244,22 @@ export function ReelCard({
           </div>
           <div className="relative max-h-[32svh] overflow-hidden px-5 pb-9 sm:px-8">
             {body ? (
-              <Markdown source={body} title={project.name} maxBlocks={14} hideImages={Boolean(heroImage)} />
-            ) : readme === undefined || (readme !== null && !readme.readmeLoaded) ? (
+              <Markdown
+                source={body}
+                title={project.name}
+                maxBlocks={14}
+                hideImages={Boolean(heroImage)}
+              />
+            ) : readme === undefined ||
+              (readme !== null && !readme.readmeLoaded) ? (
               <p className="flex min-h-40 items-center gap-2 py-4 text-sm text-muted-foreground">
                 <Spinner className="size-4" />
                 Pulling the README from GitHub…
               </p>
             ) : (
               <p className="py-4 text-sm text-muted-foreground">
-                This repository has no README — the description above is all GitHub gives us.
+                This repository has no README — the description above is all
+                GitHub gives us.
               </p>
             )}
             {body && (
@@ -216,9 +283,11 @@ export function ReelCard({
                 // rating that is actually stored.
                 const previous = rating;
                 setRating(value);
-                void Promise.resolve(onRate(project.repoId, value)).then((ok) => {
-                  if (ok === false) setRating(previous);
-                });
+                void Promise.resolve(onRate(project.repoId, value)).then(
+                  (ok) => {
+                    if (ok === false) setRating(previous);
+                  },
+                );
               }}
               onClear={() => {
                 const previous = rating;
@@ -237,17 +306,34 @@ export function ReelCard({
               aria-pressed={project.saved}
               onClick={() => onToggleSaved(project.repoId, !project.saved)}
             >
-              <Bookmark className={cn("size-3.5", project.saved && "fill-current")} />
+              <Bookmark
+                className={cn("size-3.5", project.saved && "fill-current")}
+              />
               {project.saved ? "Saved" : "Save"}
             </Button>
-            <Button variant="ghost" size="sm" className="gap-1.5" onClick={() => onSkip(project.repoId)}>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="gap-1.5"
+              onClick={() => onSkip(project.repoId)}
+            >
               <EyeOff className="size-3.5" />
               Skip
             </Button>
-            <Button variant="ghost" size="icon-sm" onClick={onPrevious} aria-label="Previous project">
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              onClick={onPrevious}
+              aria-label="Previous project"
+            >
               <ArrowUp className="size-4" />
             </Button>
-            <Button variant="ghost" size="icon-sm" onClick={onNext} aria-label="Next project">
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              onClick={onNext}
+              aria-label="Next project"
+            >
               <ArrowDown className="size-4" />
             </Button>
           </div>
@@ -261,12 +347,20 @@ export function ReelCard({
         >
           <DialogHeader className="shrink-0 gap-1 border-b border-border/70 px-6 py-5 pr-12 text-left">
             <MetaLabel>README</MetaLabel>
-            <DialogTitle className="truncate text-lg tracking-tight">{project.fullName}</DialogTitle>
-            <DialogDescription className="sr-only">Full README for {project.fullName}</DialogDescription>
+            <DialogTitle className="truncate text-lg tracking-tight">
+              {project.fullName}
+            </DialogTitle>
+            <DialogDescription className="sr-only">
+              Full README for {project.fullName}
+            </DialogDescription>
           </DialogHeader>
           <div className="min-h-0 overflow-y-auto px-6 py-6 sm:px-8">
             {body ? (
-              <Markdown source={body} title={project.name} className="text-foreground/90" />
+              <Markdown
+                source={body}
+                title={project.name}
+                className="text-foreground/90"
+              />
             ) : (
               <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground">
                 <Spinner className="size-4" />

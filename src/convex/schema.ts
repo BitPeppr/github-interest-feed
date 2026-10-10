@@ -109,7 +109,9 @@ const schema = defineSchema(
     }).index("by_user", ["userId"]),
 
     // One row per (user, project) the user has touched. A row with no `value`
-    // means the project was shown but not rated yet.
+    // means the project was shown but not rated yet. Engagement counters are
+    // maintained here (bounded: one row per pair) so ranking can use them
+    // without scanning the append-only event history.
     ratings: defineTable({
       userId: v.id("users"),
       repoId: v.number(),
@@ -120,9 +122,65 @@ const schema = defineSchema(
       seenAt: v.optional(v.number()),
       createdAt: v.number(),
       updatedAt: v.number(),
+      githubOpens: v.optional(v.number()),
+      readmeOpens: v.optional(v.number()),
+      dwellMs: v.optional(v.number()),
     })
       .index("by_user", ["userId"])
       .index("by_user_repo", ["userId", "repoId"]),
+
+    // Append-only behavioural history. `ratings` stores current state;
+    // this table stores what happened, for evaluation and future analysis.
+    // Dwell rows are aggregated client-side (one row per card view above a
+    // threshold) and never emitted for background tabs.
+    interactionEvents: defineTable({
+      userId: v.id("users"),
+      repoId: v.number(),
+      kind: v.union(
+        v.literal("impression"),
+        v.literal("rating"),
+        v.literal("rating_removed"),
+        v.literal("saved"),
+        v.literal("unsaved"),
+        v.literal("hidden"),
+        v.literal("unhidden"),
+        v.literal("readme_opened"),
+        v.literal("github_opened"),
+        v.literal("homepage_opened"),
+        v.literal("dwell"),
+        v.literal("previous"),
+        v.literal("next"),
+      ),
+      value: v.optional(v.number()), // rating value, or dwell milliseconds
+      createdAt: v.number(),
+    })
+      .index("by_user", ["userId"])
+      .index("by_user_repo", ["userId", "repoId"]),
+
+    // Incrementally maintained per-user taste summary. Affinity maps mirror
+    // exactly what `buildSignals` derives from rating history (see
+    // `recommender/profile.ts` parity tests). Dislike min-maps are NOT kept
+    // here — minima are not incrementally maintainable — so ranking still
+    // derives dislikes from history; the profile powers counts, diagnostics
+    // and (next PR) feed-queue invalidation via `feedVersion`.
+    userRecProfiles: defineTable({
+      userId: v.id("users"),
+      ratingCount: v.number(),
+      impressionCount: v.number(),
+      positiveCount: v.number(),
+      negativeCount: v.number(),
+      savedCount: v.number(),
+      hiddenCount: v.number(),
+      githubOpenCount: v.number(),
+      readmeOpenCount: v.number(),
+      topicAffinity: v.array(v.object({ key: v.string(), count: v.number() })),
+      languageAffinity: v.array(
+        v.object({ key: v.string(), count: v.number() }),
+      ),
+      ownerAffinity: v.array(v.object({ key: v.string(), count: v.number() })),
+      feedVersion: v.number(),
+      updatedAt: v.number(),
+    }).index("by_user", ["userId"]),
 
     // Where each user's endless feed has got to while walking its sources.
     feedState: defineTable({

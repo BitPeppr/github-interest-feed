@@ -71,7 +71,9 @@ export default function Wrapped() {
               {copied ? "Link copied" : "Copy link"}
             </Button>
             <Button asChild variant="outline">
-              <Link to={user ? `/u/${user._id}` : "/feed"}>Your public shelf</Link>
+              <Link to={user ? `/u/${user._id}` : "/feed"}>
+                Your public shelf
+              </Link>
             </Button>
           </div>
         </div>
@@ -118,7 +120,9 @@ export default function Wrapped() {
               />
               <Stat
                 label="Topics you loved"
-                value={data.topTopics.length > 0 ? data.topTopics.join(", ") : "—"}
+                value={
+                  data.topTopics.length > 0 ? data.topTopics.join(", ") : "—"
+                }
                 note="From your highest-rated projects"
               />
               <Stat

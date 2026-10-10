@@ -29,11 +29,7 @@ export function AppHeader({ active }: { active: AppSection }) {
     <header className="sticky top-0 z-30 border-b border-border bg-background/85 backdrop-blur-sm">
       <div className="mx-auto flex h-14 w-full max-w-6xl items-center justify-between gap-4 px-6">
         <div className="flex h-full items-center gap-5 sm:gap-8">
-          <Link
-            to="/"
-            aria-label="Gitbook home"
-            className="flex items-center"
-          >
+          <Link to="/" aria-label="Gitbook home" className="flex items-center">
             <Wordmark nameClassName="hidden sm:inline" />
           </Link>
 
